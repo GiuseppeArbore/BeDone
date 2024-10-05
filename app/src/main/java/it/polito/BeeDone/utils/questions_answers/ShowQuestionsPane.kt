@@ -1,5 +1,6 @@
 package it.polito.BeeDone.utils.questions_answers
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -32,10 +38,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
+import it.polito.BeeDone.profile.loggedUser
 import it.polito.BeeDone.task.Task
 import it.polito.BeeDone.utils.CreateImage
 import it.polito.BeeDone.utils.CreateTextFieldNoError
+import java.text.SimpleDateFormat
+import java.util.Date
 
 /**
  * Shows the list of questions associated to the selected task
@@ -46,11 +57,12 @@ import it.polito.BeeDone.utils.CreateTextFieldNoError
 fun ShowQuestions(
     selectedTask: Task,
     questions: MutableList<Question>,
-    setQuestions: (String, Task) -> Unit,
+    setQuestions: (String, Task, FirebaseFirestore) -> Unit,
     questionValue: String,
     setQuestion: (String) -> Unit,
     showUserInformationPane: (String) -> Unit,
-    navigate: (Int) -> Unit
+    navigate: (String) -> Unit,
+    db: FirebaseFirestore
 ) {
     val state = rememberScrollState()               //Needed for the scroll
 
@@ -82,7 +94,7 @@ fun ShowQuestions(
                     )
                     IconButton(onClick = {
                         if (questionValue.isNotBlank()) {                   //If the question is blank, nothing happens
-                            setQuestions(questionValue, selectedTask)       //When we add a new question, the user must scroll down or up to see it
+                            setQuestions(questionValue, selectedTask, db)       //When we add a new question, the user must scroll down or up to see it
                             setQuestion("")                                 //Reset the question
                         }
                     }) {
@@ -94,13 +106,32 @@ fun ShowQuestions(
         }
     ) {innerPadding ->
         Row(
-            Modifier.verticalScroll(state).padding(innerPadding)
+            Modifier
+                .verticalScroll(state)
+                .padding(innerPadding)
         ) {
             Column(
                 Modifier.padding(16.dp)
             ) {
+                var user by remember { mutableStateOf(User()) }
                 //Show existing questions
                 for (q in questions) {
+                    var userLoaded by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(q) {
+                        db.collection("Users").document(q.user)
+                            .get()
+                            .addOnSuccessListener {
+                                    doc ->
+                                user = doc.toObject(User::class.java)!!
+
+                                userLoaded = true
+                            }
+                            .addOnFailureListener { exception ->
+                                Log.e("Firestore", "Error getting team data", exception)
+                            }
+                    }
+
                     Row(
                         modifier = Modifier
                             .border(1.dp, Color.LightGray, RoundedCornerShape(10.dp))
@@ -108,18 +139,20 @@ fun ShowQuestions(
                             .padding(3.dp),
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable(onClick = {
-                                    showUserInformationPane(q.user.userNickname)
-                                })
-                        ) {
-                            CreateImage(
-                                photo = q.user.userImage,
-                                name = "${q.user.userFirstName} ${q.user.userLastName}",
-                                size = 30
-                            )
+                        if(userLoaded) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable(onClick = {
+                                        showUserInformationPane(q.user)
+                                    })
+                            ) {
+                                CreateImage(
+                                    photo = if(user.userImage == null) null else user.userImage!!.toUri(),
+                                    name = "${user.userFirstName} ${user.userLastName}",
+                                    size = 30
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.width(10.dp))
@@ -128,11 +161,11 @@ fun ShowQuestions(
                             modifier = Modifier.weight(10f)
                         ) {
                             Text(
-                                text = q.user.userNickname,
+                                text = q.user,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 18.sp,
                                 modifier = Modifier.clickable(onClick = {
-                                    showUserInformationPane(q.user.userNickname)
+                                    showUserInformationPane(q.user)
                                 })
                             )
 

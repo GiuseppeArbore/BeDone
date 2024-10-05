@@ -58,7 +58,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.core.net.toUri
 import coil.compose.AsyncImage
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.utils.lightBlue
 import it.polito.BeeDone.utils.myShape
 import java.text.SimpleDateFormat
@@ -89,11 +91,13 @@ fun ShowTaskAttachmentsPane(
     taskLinkValue: String,
     setLink: (String) -> Unit,
     taskMediaListValue: SnapshotStateList<Media>,
-    setMediaList: (Media) -> Unit,
-    taskLinkListValue: SnapshotStateList<String>,
-    setLinkList: (String) -> Unit,
+    setMediaList: (Media, Task, FirebaseFirestore) -> Unit,
+    taskLinkListValue: MutableList<String>,
+    setLinkList: (String, Task, FirebaseFirestore) -> Unit,
     taskDocumentListValue: SnapshotStateList<Document>,
-    setDocumentList: (Document) -> Unit
+    setDocumentList: (Document, Task, FirebaseFirestore) -> Unit,
+    selectedTask: Task,
+    db: FirebaseFirestore
 ) {
 
     //default icon values
@@ -309,8 +313,8 @@ fun ShowTaskAttachmentsPane(
                     content pointed to by the URI. Next, the file name is retrieved from the
                     DISPLAY_NAME column of the cursor. If the document URI is null or the
                     document name is not available, a default text is displayed */
-                    val documentName = doc.document.let { uri ->
-                        LocalContext.current.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val documentName = doc.document.let { document ->
+                        LocalContext.current.contentResolver.query(document.toUri(), null, null, null, null)?.use { cursor ->
                             val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                             cursor.moveToFirst()
                             cursor.getString(nameIndex)
@@ -322,7 +326,7 @@ fun ShowTaskAttachmentsPane(
                         text = documentName,
                         modifier = Modifier.clickable {
                             val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(doc.document, "application/*")
+                                setDataAndType(doc.document.toUri(), "application/*")
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
                             }
                             context.startActivity(intent)
@@ -470,7 +474,7 @@ fun ShowTaskAttachmentsPane(
                                     FloatingActionButton(
                                         onClick = {
                                             if (mediaUri != null && mediaUri != Uri.EMPTY) {
-                                                setMediaList(Media(mediaUri!!, mediaDescr, SimpleDateFormat("dd/MM/yyyy").format(Date())))
+                                                setMediaList(Media(mediaUri!!.toString(), mediaDescr, SimpleDateFormat("dd/MM/yyyy").format(Date())), selectedTask, db)
                                                 mediaUri = Uri.EMPTY
                                                 mediaDescr = ""
                                                 showPopUp = false
@@ -579,7 +583,7 @@ fun ShowTaskAttachmentsPane(
                                     FloatingActionButton(
                                         onClick = {
                                             if (taskLinkValue.isNotEmpty()) {
-                                                setLinkList(taskLinkValue)
+                                                setLinkList(taskLinkValue, selectedTask, db)
                                                 setLink("") // Reset text field after adding link
                                                 showPopUp = false
                                             } else {
@@ -706,7 +710,7 @@ fun ShowTaskAttachmentsPane(
                                     FloatingActionButton(
                                         onClick = {
                                             if (documentUri != null && documentUri != Uri.EMPTY) {
-                                                setDocumentList(Document(documentUri!!, SimpleDateFormat("dd/MM/yyyy").format(Date())))
+                                                setDocumentList(Document(documentUri!!.toString(), SimpleDateFormat("dd/MM/yyyy").format(Date())), selectedTask, db)
                                                 documentUri = Uri.EMPTY
                                                 showPopUp = false
                                             } else {

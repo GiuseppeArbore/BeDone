@@ -2,7 +2,16 @@ package it.polito.BeeDone.team
 
 import android.annotation.SuppressLint
 import android.os.Build
+import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -11,20 +20,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,67 +46,119 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.R
+import it.polito.BeeDone.activeAnimation
 import it.polito.BeeDone.profile.loggedUser
 import it.polito.BeeDone.utils.TeamBox
 import it.polito.BeeDone.utils.lightBlue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import me.saket.cascade.CascadeDropdownMenu
+
 
 @SuppressLint("UnrememberedMutableState")
 @Composable
 fun TeamListPane(
-    showingTeams: SnapshotStateList<Pair<Team, Boolean>>,
-    allTeams: MutableList<Pair<Team, Boolean>>,
+    showingTeams: SnapshotStateList<Team>,
+    allTeams: SnapshotStateList<Team>,
     clearTeamInformation: () -> Unit,
     createTeamPane: () -> Unit,
     showTeamDetailsPane: (String) -> Unit,
-    acceptInvitationPane: (String) -> Unit
+    acceptInvitationPane: (String) -> Unit,
+    db: FirebaseFirestore
 ) {
-
     var state by remember { mutableIntStateOf(0) }
 
-    //show only teams in which the user is a participant
-    if(state==0)
-        showingTeams.removeAll  { team -> team.first.teamUsers.any { it.user== loggedUser && it.role==Role.Invited } }
+    val configuration = LocalConfiguration.current
+    val screenHeight = configuration.screenHeightDp
 
+    val coroutineScope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+    var showButton by remember { mutableStateOf(false) }
+    var buttonText by remember { mutableStateOf("↑") }
+    var isLoading by remember { mutableStateOf(false) }
+
+    LaunchedEffect(scrollState.value) {
+        showButton = scrollState.value != 0
+        buttonText = if (scrollState.value < scrollState.maxValue) "↓" else "↑"
+    }
+
+    // Function to load teams asynchronously
+    suspend fun loadTeams(condition: (TeamMember) -> Boolean): List<Team> {
+        val tempTeams = mutableSetOf<Team>()  // Use a set to avoid duplicates
+        for (team in allTeams) {
+            for (teamMemberRef in team.teamMembers) {
+                try {
+                    val teamMemberDoc = db.collection("TeamMembers")
+                        .document(teamMemberRef)
+                        .get()
+                        .await()
+                    if (teamMemberDoc.exists()) {
+                        val teamMember = teamMemberDoc.toObject(TeamMember::class.java)!!
+                        if (condition(teamMember)) {
+                            tempTeams.add(team)
+                        }
+                    }
+
+                } catch (e: Exception) {
+                    Log.e("Firebase", "Error fetching team member document", e)
+                }
+            }
+        }
+        return tempTeams.toList()
+    }
+
+    // Load initial data based on the state
+    LaunchedEffect(state) {
+        coroutineScope.launch {
+            isLoading = true
+            val teams = if (state == 0) {
+                loadTeams { teamMember ->
+                    teamMember.user == loggedUser.userNickname && teamMember.role != "Invited"
+                }
+            } else {
+                loadTeams { teamMember ->
+                    teamMember.role == "Invited" && teamMember.user == loggedUser.userNickname
+                }
+            }
+
+            showingTeams.removeAll { true }
+            showingTeams.addAll(teams)
+            isLoading = false
+        }
+    }
 
     Column {
         TabRow(selectedTabIndex = state) {
-
             Tab(
                 text = { Text(text = "My teams") },
                 selected = state == 0,
-                onClick = {
-                    state = 0
-
-                    //show only teams in which the user is a partecipant
-                    showingTeams.removeAll { true }
-                    showingTeams.addAll( allTeams.filter { it.first.teamUsers.map(TeamMember::user).contains(loggedUser) })
-                    showingTeams.removeAll  { team -> team.first.teamUsers.any { it.user== loggedUser && it.role==Role.Invited } }
-                }
+                onClick = { state = 0 }
             )
             Tab(
                 text = { Text(text = "Pending invitation") },
                 selected = state == 1,
-                onClick = {
-                    state = 1
-
-                    //show only teams in which the user is invited
-                    showingTeams.removeAll { true }
-                    showingTeams.addAll( allTeams.filter { team -> team.first.teamUsers.any{it.user== loggedUser && it.role==Role.Invited} })
-                }
+                onClick = { state = 1 }
             )
         }
 
@@ -104,17 +168,110 @@ fun TeamListPane(
                 .fillMaxSize(),
             contentAlignment = Alignment.BottomEnd
         ) {
-            LazyVerticalGrid(
-                modifier = Modifier.fillMaxHeight(),
-                columns = GridCells.Fixed(2),
-                verticalArrangement = Arrangement.Top
-            ) {
-                items(showingTeams) { team ->
-                    TeamBox(team, showTeamDetailsPane, acceptInvitationPane)
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            } else {
+                val durationMillis = 1400
+                val enterAnimation = slideInHorizontally(
+                    initialOffsetX = { fullWidth -> fullWidth },
+                    animationSpec = tween(durationMillis, easing = FastOutSlowInEasing)
+                ) + fadeIn(animationSpec = tween(durationMillis, easing = FastOutSlowInEasing))
+                val exitAnimation = slideOutHorizontally(
+                    targetOffsetX = { fullWidth -> -fullWidth },
+                    animationSpec = tween(durationMillis, easing = FastOutSlowInEasing)
+                ) + fadeOut(animationSpec = tween(durationMillis, easing = FastOutSlowInEasing))
+
+                if (activeAnimation) {
+                    Crossfade(targetState = state, label = "Animation Teams") { currentState ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(scrollState)
+                        ) {
+                            AnimatedVisibility(
+                                visible = currentState == state,
+                                enter = enterAnimation,
+                                exit = exitAnimation
+                            ) {
+                                LazyVerticalGrid(
+                                    modifier = Modifier.heightIn(0.dp, screenHeight.dp),
+                                    columns = GridCells.Fixed(2),
+                                    verticalArrangement = Arrangement.Top
+                                ) {
+                                    items(showingTeams) { team ->
+                                        var userInTeam by remember {
+                                            mutableStateOf(UserInTeam())
+                                        }
+                                        var userInTeamLoaded by remember {
+                                            mutableStateOf(false)
+                                        }
+                                        LaunchedEffect(team) {
+                                            //val userInTeamId = team.getIdTeamUser(loggedUser)
+
+                                            for (uInTeam in loggedUser.userTeams){
+                                                val userInTeamDoc = db.collection("UserInTeam").document(uInTeam).get().await()
+                                                val tmpUserInTeam = userInTeamDoc.toObject(UserInTeam::class.java)
+                                                val id = userInTeamDoc.id
+                                                if (tmpUserInTeam != null && tmpUserInTeam.first == team.teamId) {
+                                                    db.collection("UserInTeam").document(id).get().addOnSuccessListener {d ->
+                                                        userInTeam = d.toObject(UserInTeam::class.java)!!
+                                                        userInTeamLoaded = true
+                                                    }
+                                                    break
+                                                }
+                                            }
+                                        }
+                                        if(userInTeamLoaded) {
+                                            TeamBox(showTeamDetailsPane, acceptInvitationPane, team, userInTeam.second)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(scrollState)
+                    ) {
+                        LazyVerticalGrid(
+                            modifier = Modifier.heightIn(0.dp, screenHeight.dp),
+                            columns = GridCells.Fixed(2),
+                            verticalArrangement = Arrangement.Top
+                        ) {
+                            items(showingTeams) { team ->
+                                var userInTeam by remember {
+                                    mutableStateOf(UserInTeam())
+                                }
+                                var userInTeamLoaded by remember {
+                                    mutableStateOf(false)
+                                }
+                                LaunchedEffect(team) {
+                                    //val userInTeamId = team.getIdTeamUser(loggedUser)
+
+                                    for (uInTeam in loggedUser.userTeams){
+                                        val userInTeamDoc = db.collection("UserInTeam").document(uInTeam).get().await()
+                                        val tmpUserInTeam = userInTeamDoc.toObject(UserInTeam::class.java)
+                                        val id = userInTeamDoc.id
+                                        if (tmpUserInTeam != null && tmpUserInTeam.first == team.teamId) {
+                                            db.collection("UserInTeam").document(id).get().addOnSuccessListener {d ->
+                                                userInTeam = d.toObject(UserInTeam::class.java)!!
+                                                userInTeamLoaded = true
+                                            }
+                                            break
+                                        }
+                                    }
+                                }
+                                if(userInTeamLoaded) {
+                                    TeamBox(showTeamDetailsPane, acceptInvitationPane, team, userInTeam.second)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            //create a new team
             FloatingActionButton(
                 onClick = {
                     clearTeamInformation()
@@ -135,16 +292,42 @@ fun TeamListPane(
                     Modifier.size(30.dp)
                 )
             }
+
+            if (showButton) {
+                FloatingActionButton(
+                    onClick = {
+                        coroutineScope.launch {
+                            if (scrollState.value < scrollState.maxValue) {
+                                scrollState.animateScrollTo(scrollState.maxValue)
+                            } else {
+                                scrollState.animateScrollTo(0)
+                            }
+                        }
+                    },
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .align(Alignment.TopEnd)
+                        .offset(10.dp, 0.dp)
+                ) {
+                    Text(buttonText, fontSize = 25.sp)
+                }
+            }
         }
     }
 }
+
+
+
+
 
 @RequiresApi(Build.VERSION_CODES.O)
 @SuppressLint("UnrememberedMutableState")
 @Composable
 fun TeamListMenu(
-    showingTeams: MutableList<Pair<Team, Boolean>>,
-    allTeams: SnapshotStateList<Pair<Team, Boolean>>
+    showingTeams: MutableList<Team>,
+    allTeams: MutableList<Team>,
+    db: FirebaseFirestore
 ) {
     var showSortMenu by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
@@ -195,7 +378,7 @@ fun TeamListMenu(
                     .border(Dp.Hairline, lightBlue),
                     text = { Text(text = "Ascending") },
                     onClick = {
-                        showingTeams.sortBy { it.first.teamName }
+                        showingTeams.sortBy { it.teamName }
                     },
                     leadingIcon = {
                         Icon(
@@ -208,7 +391,7 @@ fun TeamListMenu(
                 androidx.compose.material3.DropdownMenuItem(
                     modifier = Modifier.background(Color.White),
                     text = { Text(text = "Descending") },
-                    onClick = { showingTeams.sortByDescending { it.first.teamName } },
+                    onClick = { showingTeams.sortByDescending { it.teamName } },
                     leadingIcon = {
                         Icon(
                             painter = painterResource(R.drawable.descending),
@@ -235,7 +418,7 @@ fun TeamListMenu(
                         .background(Color.White)
                         .border(Dp.Hairline, lightBlue),
                         text = { Text(text = "Ascending") },
-                        onClick = { showingTeams.sortBy { it.first.teamCreationDate } },
+                        onClick = { showingTeams.sortBy { it.teamCreationDate } },
                         leadingIcon = {
                             Icon(
                                 painter = painterResource(R.drawable.ascending),
@@ -247,7 +430,7 @@ fun TeamListMenu(
                         Color.White
                     ),
                         text = { Text(text = "Descending") },
-                        onClick = { showingTeams.sortByDescending { it.first.teamCreationDate } },
+                        onClick = { showingTeams.sortByDescending { it.teamCreationDate } },
                         leadingIcon = {
                             Icon(
                                 painter = painterResource(R.drawable.descending),
@@ -300,7 +483,7 @@ fun TeamListMenu(
                                 )
 
                                 FloatingActionButton(
-                                    onClick = { showingTeams.removeAll { it.first.teamName != filterText } },
+                                    onClick = { showingTeams.removeAll { it.teamName != filterText } },
                                     containerColor = Color.White,
                                     shape = RoundedCornerShape(20.dp),
                                     modifier = Modifier
@@ -313,7 +496,7 @@ fun TeamListMenu(
                                 }
                             }
                         },
-                        onClick = { showingTeams.removeAll { it.first.teamName != filterText } },
+                        onClick = { showingTeams.removeAll { it.teamName != filterText } },
                         interactionSource = MutableInteractionSource()
                     )
                 })
@@ -347,7 +530,7 @@ fun TeamListMenu(
                                 )
 
                                 FloatingActionButton(
-                                    onClick = { showingTeams.removeAll { it.first.teamCategory != filterText } },
+                                    onClick = { showingTeams.removeAll { it.teamCategory != filterText } },
                                     containerColor = Color.White,
                                     shape = RoundedCornerShape(20.dp),
                                     modifier = Modifier
@@ -360,7 +543,7 @@ fun TeamListMenu(
                                 }
                             }
                         },
-                        onClick = { showingTeams.removeAll { it.first.teamCategory != filterText } },
+                        onClick = { showingTeams.removeAll { it.teamCategory != filterText } },
                         interactionSource = MutableInteractionSource()
                     )
                 })

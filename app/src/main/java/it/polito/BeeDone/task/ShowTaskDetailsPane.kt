@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -44,8 +45,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.loggedUser
 import it.polito.BeeDone.task.history.Event
+import it.polito.BeeDone.team.Team
 import it.polito.BeeDone.utils.CreateAddSubtaskSection
 import it.polito.BeeDone.utils.CreateClickableCreatorText
 import it.polito.BeeDone.utils.CreateClickableTeamText
@@ -54,13 +57,15 @@ import it.polito.BeeDone.utils.CreateRowText
 import it.polito.BeeDone.utils.CreateTaskKPI
 import it.polito.BeeDone.utils.CreateViewSubtasksSection
 import it.polito.BeeDone.utils.lightBlue
+import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.util.Date
 
 
 @Composable
 fun ShowTaskDetailsMenu(
-    showTaskQuestionsPane: (Int) -> Unit,
+    showTaskQuestionsPane: (String) -> Unit,
     showTaskAttachmentsPane: () -> Unit,
     historyPane: () -> Unit,
     selectedTask: Task
@@ -187,13 +192,15 @@ fun ShowTaskDetailsPane(
     selectedTask: Task,
     addTaskEventToHistory: (Event) -> Unit,
     setTaskCompleted: () -> Unit,
-    statusTaskVm: TaskStatus,
+    statusTaskVm: String,
     subtaskListVm: MutableList<Subtask>,    //taskSubtasksValue in GUI
     addSubtaskToTask: (Subtask) -> Unit,    //addTaskSubtasks in GUI
-    editTaskPane: () -> Unit,
+    editTaskPane: (String) -> Unit,
     taskTimerPane: () -> Unit,
     showTeamDetailsPane: (String) -> Unit,
-    showUserInformationPane: (String) -> Unit
+    showUserInformationPane: (String) -> Unit,
+    allTeams: SnapshotStateList<Team>,
+    db: FirebaseFirestore
 ) {
     BoxWithConstraints {
         if (this.maxHeight > this.maxWidth) {  //True if the screen is in portrait mode
@@ -234,7 +241,7 @@ fun ShowTaskDetailsPane(
                         ) {
                             Spacer(modifier = Modifier.height(16.dp))
                             CreateTaskKPI(
-                                subtaskListVm.filter { it.subtaskState == State.Completed }.size,
+                                subtaskListVm.filter { it.subtaskState == "Completed" }.size,
                                 subtaskListVm.size
                             )
                             Spacer(modifier = Modifier.height(16.dp))
@@ -248,15 +255,17 @@ fun ShowTaskDetailsPane(
                     }
 
                     //Team
-                    CreateClickableTeamText(contentDescription = "Team", taskTeam = selectedTask.taskTeam, showTeamDetailsPane)
+                    CreateClickableTeamText(contentDescription = "Team", taskTeam = selectedTask.taskTeam, showTeamDetailsPane, allTeams)
 
                     //Creator
-                    CreateClickableCreatorText(contentDescription = "Created by", creator = selectedTask.taskCreator, showUserInformationPane = showUserInformationPane)
+                    CreateClickableCreatorText(contentDescription = "Created by", creator = selectedTask.taskCreator, showUserInformationPane = showUserInformationPane, db)
 
                     //User/users
                     CreateClickableUserText(
-                        contentDescription = "Users", taskUsers = selectedTask.taskUsers,
-                        showUserInformationPane = showUserInformationPane
+                        contentDescription = "Users",
+                        taskUsers = selectedTask.taskUsers,
+                        showUserInformationPane = showUserInformationPane,
+                        db
                     )
 
                     //Category
@@ -272,8 +281,8 @@ fun ShowTaskDetailsPane(
 
                     Spacer(modifier = Modifier.height(30.dp))
 
-                    if (statusTaskVm != TaskStatus.Completed && statusTaskVm != TaskStatus.ExpiredCompleted
-                        && (selectedTask.taskUsers.contains(loggedUser) || selectedTask.taskCreator== loggedUser))  {
+                    if (statusTaskVm != "Completed" && statusTaskVm != "Expired Completed"
+                        && (selectedTask.taskUsers.contains(loggedUser.userNickname) || selectedTask.taskCreator== loggedUser.userNickname))  {
                         //Add subtasks
                         Row(
                             modifier = Modifier.fillMaxHeight()
@@ -289,7 +298,7 @@ fun ShowTaskDetailsPane(
                                     .padding(10.dp, 4.dp)
                             ) {
                                 CreateAddSubtaskSection(
-                                    selectedTask, subtaskListVm, addTaskEventToHistory, addSubtaskToTask
+                                    selectedTask, subtaskListVm, addTaskEventToHistory, addSubtaskToTask, db
                                 )
                             }
                         }
@@ -312,14 +321,14 @@ fun ShowTaskDetailsPane(
                                     .padding(10.dp, 4.dp)
                             ) {
                                 CreateViewSubtasksSection(
-                                    selectedTask, subtaskListVm, addTaskEventToHistory
+                                    selectedTask, subtaskListVm, addTaskEventToHistory, db
                                 )
                             }
                             Spacer(modifier = Modifier.height(30.dp))
                         }
                     }
-                    if (statusTaskVm != TaskStatus.Completed && statusTaskVm != TaskStatus.ExpiredCompleted
-                        && (selectedTask.taskUsers.contains(loggedUser) || selectedTask.taskCreator== loggedUser)) {
+                    if (statusTaskVm != "Completed" && statusTaskVm != "Expired Completed"
+                        && (selectedTask.taskUsers.contains(loggedUser.userNickname) || selectedTask.taskCreator== loggedUser.userNickname)) {
                         //button section
                         Row(modifier = Modifier.fillMaxHeight()) {
                             Column(
@@ -331,7 +340,7 @@ fun ShowTaskDetailsPane(
                             ) {
                                 FloatingActionButton(
                                     onClick = {
-                                        editTaskPane()  //go to edit task pane
+                                        editTaskPane(selectedTask.taskId)  //go to edit task pane
                                     },
                                     shape = RoundedCornerShape(30.dp),
                                     containerColor = Color.White,
@@ -386,10 +395,32 @@ fun ShowTaskDetailsPane(
                                 FloatingActionButton(
                                     onClick = {
                                         setTaskCompleted()
-                                        if(LocalDate.parse(selectedTask.taskDeadline, DateTimeFormatter.ofPattern("dd/MM/uuuu")) < LocalDate.now())
-                                            selectedTask.taskStatus= TaskStatus.ExpiredCompleted
-                                        else
-                                            selectedTask.taskStatus=TaskStatus.Completed
+
+                                        val taskHistoryToAdd = hashMapOf(
+                                            "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                                            "taskChanges" to mutableListOf<String>(),
+                                            "taskDoneSubtasks" to subtaskListVm.filter {s -> s.subtaskState == "Completed"}.size.toString(),
+                                            "taskStatus" to selectedTask.taskStatus,
+                                            "taskTotalSubtasks" to subtaskListVm.size.toString(),
+                                            "title" to "Task Completed",
+                                            "user" to loggedUser.userNickname
+                                        )
+
+                                        db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                                            selectedTask.taskHistory.add(taskHistoryRef.id)
+                                            db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                                        }
+
+                                        if(LocalDate.parse(selectedTask.taskDeadline, DateTimeFormatter.ofPattern("dd/MM/uuuu")) < LocalDate.now()) {
+                                            selectedTask.taskStatus = "Expired Completed"
+
+                                            db.collection("Tasks").document(selectedTask.taskId).update("taskStatus", "Expired Completed")
+                                        }
+                                        else {
+                                            selectedTask.taskStatus = "Completed"
+
+                                            db.collection("Tasks").document(selectedTask.taskId).update("taskStatus", "Completed")
+                                        }
                                         //task.taskStatus = TaskStatus.Completed
                                         //changeScreen(Pane.ShowTaskDetailsPane)
                                     }, //task completed
@@ -452,6 +483,8 @@ fun ShowTaskDetailsPane(
 
                         //Task KPI
                         if (selectedTask.taskSubtasks.size > 0) {
+
+
                             Column(
                                 modifier = Modifier
                                     .border(
@@ -461,8 +494,8 @@ fun ShowTaskDetailsPane(
                             ) {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 CreateTaskKPI(
-                                    selectedTask.taskSubtasks.filter { it.subtaskState == State.Completed }.size,
-                                    selectedTask.taskSubtasks.size
+                                    subtaskListVm.filter { it.subtaskState == "Completed" }.size,
+                                    subtaskListVm.size
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                             }
@@ -475,15 +508,17 @@ fun ShowTaskDetailsPane(
                         }
 
                         //Team
-                        CreateClickableTeamText(contentDescription = "Team", taskTeam = selectedTask.taskTeam, showTeamDetailsPane)
+                        CreateClickableTeamText(contentDescription = "Team", taskTeam = selectedTask.taskTeam, showTeamDetailsPane, allTeams)
 
                         //Creator
-                        CreateClickableCreatorText(contentDescription = "Created by", creator = selectedTask.taskCreator, showUserInformationPane = showUserInformationPane)
+                        CreateClickableCreatorText(contentDescription = "Created by", creator = selectedTask.taskCreator, showUserInformationPane = showUserInformationPane, db)
 
                         //User/users
                         CreateClickableUserText(
-                            contentDescription = "Users", taskUsers = selectedTask.taskUsers,
-                            showUserInformationPane = showUserInformationPane
+                            contentDescription = "Users",
+                            taskUsers = selectedTask.taskUsers,
+                            showUserInformationPane = showUserInformationPane,
+                            db
                         )
 
                         //Category
@@ -499,8 +534,8 @@ fun ShowTaskDetailsPane(
 
                         Spacer(modifier = Modifier.height(30.dp))
 
-                        if (statusTaskVm != TaskStatus.Completed && statusTaskVm != TaskStatus.ExpiredCompleted
-                            && (selectedTask.taskUsers.contains(loggedUser) || selectedTask.taskCreator== loggedUser))  {
+                        if (statusTaskVm != "Completed" && statusTaskVm != "Expired Completed"
+                            && (selectedTask.taskUsers.contains(loggedUser.userNickname) || selectedTask.taskCreator== loggedUser.userNickname))  {
                             //Add subtasks
                             Row(
                                 modifier = Modifier.fillMaxHeight()
@@ -516,7 +551,7 @@ fun ShowTaskDetailsPane(
                                         .padding(start = 25.dp, top = 4.dp, bottom = 4.dp)
                                 ) {
                                     CreateAddSubtaskSection(
-                                        selectedTask, subtaskListVm, addTaskEventToHistory, addSubtaskToTask
+                                        selectedTask, subtaskListVm, addTaskEventToHistory, addSubtaskToTask, db
                                     )
                                 }
                             }
@@ -539,15 +574,15 @@ fun ShowTaskDetailsPane(
                                         .padding(start = 25.dp, top = 4.dp, bottom = 4.dp)
                                 ) {
                                     CreateViewSubtasksSection(
-                                        selectedTask, subtaskListVm, addTaskEventToHistory
+                                        selectedTask, subtaskListVm, addTaskEventToHistory, db
                                     )
                                 }
                                 Spacer(modifier = Modifier.height(30.dp))
                             }
                         }
 
-                        if (statusTaskVm != TaskStatus.Completed && statusTaskVm != TaskStatus.ExpiredCompleted
-                            && (selectedTask.taskUsers.contains(loggedUser) || selectedTask.taskCreator == loggedUser)) {
+                        if (statusTaskVm != "Completed" && statusTaskVm != "Expired Completed"
+                            && (selectedTask.taskUsers.contains(loggedUser.userNickname) || selectedTask.taskCreator == loggedUser.userNickname)) {
                             //button section
                             Row(modifier = Modifier.fillMaxHeight()) {
                                 Column(
@@ -559,7 +594,7 @@ fun ShowTaskDetailsPane(
                                 ) {
                                     FloatingActionButton(
                                         onClick = {
-                                            editTaskPane()  //go to edit task pane
+                                            editTaskPane(selectedTask.taskId)  //go to edit task pane
                                         },
                                         shape = RoundedCornerShape(30.dp),
                                         containerColor = Color.White,
@@ -615,9 +650,9 @@ fun ShowTaskDetailsPane(
                                         onClick = {
                                             setTaskCompleted()
                                             if(LocalDate.parse(selectedTask.taskDeadline, DateTimeFormatter.ofPattern("dd/MM/uuuu")) < LocalDate.now())
-                                                selectedTask.taskStatus= TaskStatus.ExpiredCompleted
+                                                selectedTask.taskStatus= "Expired Completed"
                                             else
-                                                selectedTask.taskStatus=TaskStatus.Completed
+                                                selectedTask.taskStatus="Completed"
                                         }, //task completed
                                         shape = RoundedCornerShape(30.dp),
                                         containerColor = Color.White,

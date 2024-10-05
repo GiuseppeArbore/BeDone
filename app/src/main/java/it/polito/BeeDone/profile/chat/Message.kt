@@ -15,7 +15,7 @@ class Message(
     var message: String,
     var date: String,
     var time: String,
-    var sender: User
+    var sender: String
 ) {
-    constructor() : this("", SimpleDateFormat("dd/MM/yyyy").format(Date()), SimpleDateFormat("hh:mm").format(Date()), User())
+    constructor() : this("", SimpleDateFormat("dd/MM/yyyy").format(Date()), SimpleDateFormat("hh:mm").format(Date()), "")
 }

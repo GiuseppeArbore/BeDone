@@ -2,6 +2,7 @@ package it.polito.BeeDone.task
 
 import android.annotation.SuppressLint
 import android.os.Build
+import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -10,13 +11,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.toMutableStateList
 import androidx.lifecycle.ViewModel
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.profile.loggedUser
 import it.polito.BeeDone.task.history.Event
 import it.polito.BeeDone.utils.questions_answers.Answer
 import it.polito.BeeDone.utils.questions_answers.Question
 import it.polito.BeeDone.task.timer.TaskTimer
+import it.polito.BeeDone.taskViewModel
 import it.polito.BeeDone.team.Team
+import it.polito.BeeDone.teamViewModel
 import it.polito.BeeDone.utils.addSpacesToSentence
 import java.text.SimpleDateFormat
 import java.time.LocalDate
@@ -24,59 +28,92 @@ import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.concurrent.atomic.AtomicInteger
 
-enum class Repeat {
-    NoRepeat, OncePerWeek, OnceEveryTwoWeeks, OncePerMonth
-}
-
-enum class TaskStatus{
-    Completed, ExpiredNotCompleted, ExpiredCompleted, InProgress, Pending
-}
-
 private val taskCount: AtomicInteger = AtomicInteger(1)
 
+
+var taskStatus = listOf("Pending", "In Progress", "Completed", "Expired Not Completed", "Expired Completed")
+
 class Task(
-    var taskId: Int,
+    var taskId: String,
     var taskTitle: String,
     var taskDescription: String,
     var taskDeadline: String,
     var taskTag: String,
     var taskCategory: String,
-    var taskUsers: MutableList<User>,
-    var taskRepeat: Repeat,
-    var taskSubtasks: SnapshotStateList<Subtask>,
-    var taskTeam: Team,
-    var taskHistory: MutableList<Event>,
-    var taskQuestions: MutableList<Question>,
-    var taskStatus: TaskStatus,
-    var taskTimerHistory: MutableList<TaskTimer>,
-    var taskMediaList: SnapshotStateList<Media>,
-    var taskLinkList: SnapshotStateList<String>,
-    var taskDocumentList: SnapshotStateList<Document>,
-    var taskCreator: User,
+    var taskUsers: MutableList<String>,
+    var taskRepeat: String,
+    var taskSubtasks: MutableList<String>,
+    var taskTeam: String,
+    var taskHistory: MutableList<String>,
+    var taskQuestions: MutableList<String>,
+    var taskStatus: String,
+    var taskTimerHistory: MutableList<String>,
+    var taskMediaList: MutableList<String>,
+    var taskLinkList: MutableList<String>,
+    var taskDocumentList: MutableList<String>,
+    var taskCreator: String,
     var taskCreationDate: String
 ) {
     @RequiresApi(Build.VERSION_CODES.O)
     constructor() : this(
-        taskId = taskCount.incrementAndGet(),
+        taskId = "",
         taskTitle = "",
         taskDescription = "",
         taskDeadline = "",
         taskTag = "",
         taskCategory = "",
         taskUsers = mutableListOf(),
-        taskRepeat = Repeat.NoRepeat,
+        taskRepeat = "No Repeat",
         taskSubtasks = mutableStateListOf(),
-        taskTeam = Team(),
+        taskTeam = "",
         taskHistory = mutableListOf(),
         taskQuestions = mutableListOf(),
-        taskStatus = TaskStatus.Pending,
+        taskStatus = "Pending",
         taskTimerHistory = mutableListOf(),
         taskMediaList = mutableStateListOf(),
         taskLinkList = mutableStateListOf(),
         taskDocumentList = mutableStateListOf(),
-        loggedUser,
+        loggedUser.userNickname,
         LocalDate.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
     )
+
+    public fun deleteTask(db: FirebaseFirestore) {
+        val taskUsers: MutableList<User> = mutableListOf()
+        var taskTeam: Team = Team()
+
+        for (userRef in this.taskUsers) {
+            db.collection("Users").document(userRef)
+                .get()
+                .addOnSuccessListener {
+                    doc->
+                    taskUsers.add(doc!!.toObject(User::class.java)!!)
+                }
+                .addOnFailureListener {
+                    e ->
+                    Log.e("Firestore", "Error getting team data", e)
+                }
+        }
+
+        for (u in taskUsers) {
+            u.deleteTask("Tasks/${this.taskId}")
+        }
+
+        db.collection("Team").document(this.taskTeam)
+            .get()
+            .addOnSuccessListener {
+                    doc->
+                    taskTeam = doc!!.toObject(Team::class.java)!!
+            }
+            .addOnFailureListener {
+                e ->
+                Log.e("Firestore", "Error getting team data", e)
+            }
+        taskTeam.teamTasks.remove(this.taskId)
+
+        db.collection("Tasks").document(this.taskId).delete()
+
+        taskViewModel.allTasks.remove(this)
+    }
 }
 
 //this is the task that is currently shown
@@ -87,9 +124,11 @@ class TaskViewModel : ViewModel() {
     var allTasks = mutableStateListOf<Task>()
     var showingTasks = mutableStateListOf<Task>()
 
-    fun addTask(newTask: Task) {
-        allTasks.add(newTask)
-    }
+    //Task Title
+    var taskIdValue by mutableStateOf("")
+        private set
+    var taskIdError by mutableStateOf("")
+        private set
 
     //Task Title
     var taskTitleValue by mutableStateOf("")
@@ -168,6 +207,11 @@ class TaskViewModel : ViewModel() {
     )
         private set
 
+
+    fun addTask(newTask: Task) {
+        allTasks.add(newTask)
+    }
+
     fun setTaskUsers(n: User) {
         taskUsersValue.add(n)
     }
@@ -176,15 +220,28 @@ class TaskViewModel : ViewModel() {
         taskUsersValue.remove(n)
     }
 
-    fun assignTaskUsers(n: MutableList<User>) {
-        taskUsersValue = n
+    fun assignTaskUsers(n: MutableList<String>, db: FirebaseFirestore) {
+        taskUsersValue = mutableListOf()
+
+        for (userRef in n) {
+            db.collection("Users").document(userRef)
+                .addSnapshotListener() {
+                        doc, e ->
+                    if(e == null) {
+                        taskUsersValue.add(doc!!.toObject(User::class.java)!!)
+                    }
+                    else {
+                        Log.e("Firestore", "Error getting team data", e)
+                    }
+                }
+        }
     }
 
     //Task Repeat
-    var taskRepeatValue by mutableStateOf(Repeat.NoRepeat)
+    var taskRepeatValue by mutableStateOf("No Repeat")
         private set
 
-    fun setTaskRepeat(n: Repeat) {
+    fun setTaskRepeat(n: String) {
         taskRepeatValue = n
     }
 
@@ -197,16 +254,26 @@ class TaskViewModel : ViewModel() {
            taskSubtaskValue = n
        } */
 
-    var taskSubtasksValue by mutableStateOf(
-        mutableStateListOf<Subtask>()
-    )
+    var taskSubtasksValue = mutableListOf<Subtask>()
         private set
 
     /*   fun setTaskSubtasks(n: String) {
            taskSubtasksValue.add(n)
        } */
-    fun assignTaskSubtasks(n: SnapshotStateList<Subtask>) {
-        taskSubtasksValue = n
+    fun assignTaskSubtasks(n: MutableList<String>, db: FirebaseFirestore) {
+        taskSubtasksValue = mutableListOf()
+        for (subtaskRef in n) {
+            db.collection("Subtasks").document(subtaskRef)
+                .addSnapshotListener {
+                    doc, e ->
+                    if(e == null) {
+                        taskSubtasksValue.add(doc!!.toObject(Subtask::class.java)!!)
+                    }
+                    else {
+                        Log.e("Firestore", "Error getting Subtask data", e)
+                    }
+                }
+        }
     }
 
     fun addTaskSubtasks(n: Subtask) {
@@ -219,8 +286,17 @@ class TaskViewModel : ViewModel() {
     var taskTeamError by mutableStateOf("")
         private set
 
-    fun setTaskTeam(n: Team) {
-        taskTeamValue = n
+    fun setTaskTeam(n: String, db: FirebaseFirestore) {
+        db.collection("Team").document(n)
+            .addSnapshotListener {
+                    doc, e ->
+                if(e == null) {
+                    taskTeamValue = doc!!.toObject(Team::class.java)!!
+                }
+                else {
+                    Log.e("Firestore", "Error getting team data", e)
+                }
+            }
     }
 
     fun checkTaskTeam() {
@@ -238,9 +314,11 @@ class TaskViewModel : ViewModel() {
     )
         private set
 
-    var taskLinkListValue by mutableStateOf(
+    var taskLinkListValue = mutableListOf<String>()
+
+    /*by mutableStateOf(
         mutableStateListOf<String>()
-    )
+    )*/
         private set
 
     var taskDocumentListValue by mutableStateOf(
@@ -251,30 +329,87 @@ class TaskViewModel : ViewModel() {
     var taskLinkValue by mutableStateOf("")
         private set
 
-    fun setTaskMediaList(n: Media) {
+    fun setTaskMediaList(n: Media, selectedTask: Task, db: FirebaseFirestore) {
         taskMediaListValue.add(n)
+
+        val mediaToAdd = hashMapOf(
+            "date" to n.date,
+            "image" to n.image,
+            "mediaDescription" to n.mediaDescription
+        )
+
+        db.collection("Media").add(mediaToAdd).addOnSuccessListener { mediaRef ->
+            selectedTask.taskMediaList.add(mediaRef.id)
+
+            db.collection("Tasks").document(selectedTask.taskId).get().addOnSuccessListener { d ->
+                val taskMediaList = d.get("taskMediaList") as MutableList<String>
+                taskMediaList.add(mediaRef.id)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskMediaList", taskMediaList)
+            }
+        }
     }
-    fun assignTaskMediaList(n: SnapshotStateList<Media>) {
-        taskMediaListValue = n
+    fun assignTaskMediaList(n: MutableList<String>, db: FirebaseFirestore) {
+        taskMediaListValue = mutableStateListOf()
+
+        for (mediaRef in n) {
+            db.collection("Media").document(mediaRef)
+                .addSnapshotListener { doc, e ->
+                    if(e == null) {
+                        taskMediaListValue.add(doc!!.toObject(Media::class.java)!!)
+                    }
+                    else {
+                        Log.e("Firestore", "Error getting team data", e)
+                    }
+                }
+        }
     }
 
     fun setTaskLink(n: String) {
         taskLinkValue = n
     }
 
-    fun setTaskLinkList(n: String) {
+    fun setTaskLinkList(n: String, selectedTask: Task, db: FirebaseFirestore) {
         taskLinkListValue.add(n)
+
+        db.collection("Tasks").document(selectedTask.taskId).update("taskLinkList", taskLinkListValue)
     }
-    fun assignTaskLinkList(n: SnapshotStateList<String>) {
+    fun assignTaskLinkList(n: MutableList<String>) {
         taskLinkListValue = n
     }
 
-
-    fun setTaskDocumentList(n: Document) {
+    fun setTaskDocumentList(n: Document, selectedTask: Task, db: FirebaseFirestore) {
         taskDocumentListValue.add(n)
+
+        val documentToAdd = hashMapOf(
+            "date" to n.date,
+            "document" to n.document
+        )
+
+        db.collection("Document").add(documentToAdd).addOnSuccessListener { documentRef ->
+            selectedTask.taskDocumentList.add(documentRef.id)
+
+            db.collection("Tasks").document(selectedTask.taskId).get().addOnSuccessListener { d ->
+                val taskDocumentList = d.get("taskDocumentList") as MutableList<String>
+                taskDocumentList.add(documentRef.id)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskDocumentList", taskDocumentList)
+            }
+        }
     }
-    fun assignTaskDocumentList(n: SnapshotStateList<Document>) {
-        taskDocumentListValue = n
+    fun assignTaskDocumentList(n: MutableList<String>, db: FirebaseFirestore) {
+        taskDocumentListValue = mutableStateListOf()
+
+        for (documentRef in n) {
+            db.collection("Document").document(documentRef)
+                .addSnapshotListener { doc, e ->
+                    if(e == null) {
+                        taskDocumentListValue.add(doc!!.toObject(Document::class.java)!!)
+                    }
+                    else {
+                        Log.e("Firestore", "Error getting team data", e)
+                    }
+                }
+        }
+
     }
 
     //Task Questions
@@ -293,20 +428,44 @@ class TaskViewModel : ViewModel() {
         private set
 
     @SuppressLint("SimpleDateFormat")
-    fun setTaskQuestions(n: String, selectedTask: Task) {
-        val q = Question(
-            if(taskQuestionsValue.size == 0) 1 else taskQuestionsValue.maxOf { it.questionId }+1,
-            n,
-            SimpleDateFormat("dd/MM/yyyy").format(Date()),
-            loggedUser,
-            mutableListOf<Answer>()
-        )                                                   //When we will have a working login, the Profile will be the one of the currently logged in user
-        taskQuestionsValue.add(q)
-        selectedTask.taskQuestions = taskQuestionsValue
+    fun setTaskQuestions(n: String, selectedTask: Task, db: FirebaseFirestore) {
+        val questionToAdd = hashMapOf(
+            "questionId" to "",
+            "text" to n,
+            "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+            "user" to loggedUser.userNickname,
+            "answers" to mutableListOf<String>()
+        )
+
+        db.collection("Questions").add(questionToAdd).addOnSuccessListener {taskQuestionRef ->
+            selectedTask.taskQuestions.add(taskQuestionRef.id)
+            db.collection("Questions").document(taskQuestionRef.id).update("questionId", taskQuestionRef.id)
+            db.collection("Tasks").document(selectedTask.taskId).update("taskQuestions", selectedTask.taskQuestions)
+
+            val q = Question(
+                taskQuestionRef.id,
+                n,
+                SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                loggedUser.userNickname,
+                mutableListOf()
+            )
+            taskQuestionsValue.add(q)
+        }
     }
 
-    fun assignTaskQuestions(n: MutableList<Question>) {
-        taskQuestionsValue = n
+    fun assignTaskQuestions(n: MutableList<String>, db: FirebaseFirestore) {
+        taskQuestionsValue = mutableListOf()
+        for (questionRef in n) {
+            db.collection("Questions").document(questionRef)
+                .get()
+                .addOnSuccessListener {
+                        doc ->
+                    taskQuestionsValue.add(doc.toObject(Question::class.java)!!)
+                }
+                .addOnFailureListener { exception ->
+                    Log.e("Firestore", "Error getting team data", exception)
+                }
+        }
     }
 
     //Task Answers
@@ -325,18 +484,38 @@ class TaskViewModel : ViewModel() {
         private set
 
     @SuppressLint("SimpleDateFormat")
-    fun setTaskAnswers(n: String, selectedQuestion: Question) {
-        val a = Answer(
-            n,
-            SimpleDateFormat("dd/MM/yyyy").format(Date()),
-            loggedUser
+    fun setTaskAnswers(n: String, selectedQuestion: Question, db: FirebaseFirestore) {
+        val answerToAdd = hashMapOf(
+            "text" to n,
+            "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+            "user" to loggedUser.userNickname
         )
-        taskAnswersValue.add(a)
-        selectedQuestion.answers = taskAnswersValue
+
+        db.collection("Answers").add(answerToAdd).addOnSuccessListener {answerRef ->
+            selectedQuestion.answers.add(answerRef.id)
+            db.collection("Questions").document(selectedQuestion.questionId).update("answers", selectedQuestion.answers)
+
+            val a = Answer(
+                n,
+                SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                loggedUser.userNickname
+            )
+            taskAnswersValue.add(a)
+        }
     }
 
-    fun assignTaskAnswers(n: MutableList<Answer>) {
-        taskAnswersValue = n
+    fun assignTaskAnswers(n: MutableList<String>, db: FirebaseFirestore) {
+        taskAnswersValue = mutableListOf()
+        for (answerRef in n) {
+            db.collection("Answers").document(answerRef)
+                .get()
+                .addOnSuccessListener { doc ->
+                    taskAnswersValue.add(doc.toObject(Answer::class.java)!!)
+                }
+                .addOnFailureListener { exception ->
+                    Log.e("Firestore", "Error getting team data", exception)
+                }
+        }
     }
 
     //Task History
@@ -351,13 +530,23 @@ class TaskViewModel : ViewModel() {
         taskHistoryValue.add(n)
     }
 
-    fun assignTaskHistory(n: MutableList<Event>) {
-        taskHistoryValue = n
+    fun assignTaskHistory(n: MutableList<String>, db: FirebaseFirestore) {
+        for (eventRef in n) {
+            db.collection("TaskHistory").document(eventRef)
+                .get()
+                .addOnSuccessListener {
+                        doc ->
+                    taskHistoryValue.add(doc.toObject(Event::class.java)!!)
+                }
+                .addOnFailureListener { exception ->
+                    Log.e("Firestore", "Error getting team data", exception)
+                }
+        }
     }
 
-    var taskStatusValue by mutableStateOf(TaskStatus.Pending)
+    var taskStatusValue by mutableStateOf("Pending")
 
-    fun setTaskStatus(n: TaskStatus) {
+    fun setTaskStatus(n: String) {
         taskStatusValue = n
     }
 
@@ -376,36 +565,63 @@ class TaskViewModel : ViewModel() {
     var taskTimerHistory by mutableStateOf<MutableList<TaskTimer>>(mutableListOf())
         private set
     @SuppressLint("SimpleDateFormat")
-    fun addTaskTimerHistory(n: Int) {
+    fun addTaskTimerHistory(n: Int, selectedTask: Task, db: FirebaseFirestore) {
         taskTimerHistory.add(
             0,
             TaskTimer(
                 ticks = n,
                 date = SimpleDateFormat("dd/MM/yyyy").format(Date()),
                 title = taskTimerTitleValue,
-                user = loggedUser
+                user = loggedUser.userNickname
             )
         )
+
+        val taskTimerToAdd = hashMapOf(
+            "ticks" to n,
+            "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+            "title" to taskTimerTitleValue,
+            "user" to loggedUser.userNickname
+        )
+
+        db.collection("TaskTimerHistory").add(taskTimerToAdd).addOnSuccessListener { taskTimerHistoryRef ->
+            selectedTask.taskTimerHistory.add(taskTimerHistoryRef.id)
+            db.collection("Tasks").document(selectedTask.taskId).get().addOnSuccessListener {d ->
+                val taskTimerHistoryList = d.get("taskTimerHistory") as MutableList<String>
+                taskTimerHistoryList.add(taskTimerHistoryRef.id)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskTimerHistory", taskTimerHistoryList)
+            }
+        }
     }
-    fun assignTaskTimerHistory(n: MutableList<TaskTimer>) {
-        taskTimerHistory = n
+    fun assignTaskTimerHistory(n: MutableList<String>, db: FirebaseFirestore) {
+        taskTimerHistory = mutableListOf()
+
+        for (taskTimerRef in n) {
+            db.collection("TaskTimerHistory").document(taskTimerRef)
+                .get()
+                .addOnSuccessListener {
+                        doc ->
+                    taskTimerHistory.add(doc.toObject(TaskTimer::class.java)!!)
+                }
+                .addOnFailureListener { exception ->
+                    Log.e("Firestore", "Error getting team data", exception)
+                }
+        }
     }
 
     @SuppressLint("SimpleDateFormat")
     @RequiresApi(Build.VERSION_CODES.O)
     fun setTaskAsCompleted() {
         if(LocalDate.parse(taskDeadlineValue, DateTimeFormatter.ofPattern("dd/MM/uuuu")) < LocalDate.now()){
-            taskStatusValue = TaskStatus.ExpiredCompleted
+            taskStatusValue = "Expired Completed"
         }else{
-            taskStatusValue = TaskStatus.Completed
-
+            taskStatusValue = "Completed"
         }
         addTaskEventToHistory(
             Event(
                 "Task Completed",
                 SimpleDateFormat("dd/MM/yyyy").format(Date()),
                 taskStatusValue,
-                loggedUser,
+                loggedUser.userNickname,
                 taskSubtasksValue.size.toString(),
                 taskSubtasksValue.size.toString(),
                 mutableListOf()
@@ -419,20 +635,21 @@ class TaskViewModel : ViewModel() {
     private var oldTaskDescriptionValue: String = taskDescriptionValue
     private var oldTaskTagValue: String = taskTagValue
     private var oldTaskUsersValue: MutableList<User> = taskUsersValue.toMutableList()
-    private var oldTaskRepeatValue: Repeat = taskRepeatValue
+    private var oldTaskRepeatValue: String = taskRepeatValue
     private var oldTaskSubtasksValue: SnapshotStateList<Subtask> = taskSubtasksValue.toMutableStateList()
     private var oldTaskSubtaskValue: String = taskSubtaskValue
     private var oldTaskTeamValue: Team = taskTeamValue
     private var oldTaskHistoryValue: MutableList<Event> = taskHistoryValue.toMutableList()
-    private var oldTaskStatusValue: TaskStatus = taskStatusValue
+    private var oldTaskStatusValue: String = taskStatusValue
 
     /* information validation */
     @SuppressLint("SimpleDateFormat")
     @RequiresApi(Build.VERSION_CODES.O)
     fun validateTaskInformation(
-        showTaskDetailsPane: ((Int) -> Unit)? = null,               //When I am creating a task, I want to navigate to showTaskDetailsPane
+        showTaskDetailsPane: ((String) -> Unit)? = null,               //When I am creating a task, I want to navigate to showTaskDetailsPane
         navigateBack: (() -> Unit)? = null,                         //When I am editing a task, I want to navigate back
-        task: Task?
+        task: Task?,
+        db: FirebaseFirestore
     ) {
         var selectedTask: Task
         if(task != null) {
@@ -451,66 +668,131 @@ class TaskViewModel : ViewModel() {
 
             if (showTaskDetailsPane != null) {          //If showTaskDetailsPane is not null, I am creating a new tsk. Otherwise, I am editing a task, so navigateBack isn't null
                 if (taskUsersValue.size>0){
-                    taskStatusValue=TaskStatus.InProgress
+                    taskStatusValue="In Progress"
                 }else{
-                    taskStatusValue=TaskStatus.Pending
+                    taskStatusValue="Pending"
                 }
                 val tmpTask = Task(
-                    taskCount.incrementAndGet(),
+                    "",
                     taskTitleValue,
                     taskDescriptionValue,
                     taskDeadlineValue,
                     taskTagValue,
                     taskCategoryValue,
-                    taskUsersValue.toMutableList(),
+                    taskUsersValue.map{it.userNickname}.toMutableList(),
                     taskRepeatValue,
-                    taskSubtasksValue.toMutableStateList(),
-                    taskTeamValue,
-                    taskHistoryValue,
-                    mutableListOf<Question>(),
+                    //taskSubtasksValue.map{it.subtaskId}.toMutableStateList(),
+                    selectedTask.taskSubtasks,
+                    taskTeamValue.teamId,
+                    //taskHistoryValue.map{it.eventId}.toMutableStateList(),
+                    selectedTask.taskHistory,
+                    mutableListOf<String>(),
                     taskStatusValue,
                     mutableListOf(),
                     mutableStateListOf(),
                     mutableStateListOf(),
                     mutableStateListOf(),
-                    loggedUser,
+                    loggedUser.userNickname,
                     LocalDate.now().format(DateTimeFormatter.ofPattern("dd/MM/uuuu"))
                 )
 
-                addTask(tmpTask)
-
-                val str : MutableList<String> = mutableListOf()
-                val taskChangesTmp: String = "Title: $taskTitleValue \n"+
-                        "Description: $taskDescriptionValue \n" +
-                        "Deadline: $taskDeadlineValue \n" +
-                        "Category: $taskCategoryValue \n" +
-                        "Repeat: $taskRepeatValue \n" +
-                        "Team: ${taskTeamValue.teamName} \n" +
-                        "Users: " +
-                        taskUsersValue.map { u-> u.userNickname }.toSet().joinToString()
-
-                str.add(0, taskChangesTmp)
-
-                /*add creation event*/
-                addTaskEventToHistory(
-                    Event(
-                        "Task created", SimpleDateFormat("dd/MM/yyyy").format(Date()), taskStatusValue,
-                        loggedUser, "0", taskSubtasksValue.size.toString(), str
-                    )
+                val taskToAdd = hashMapOf(
+                    "taskCategory" to taskCategoryValue,
+                    "taskCreationDate" to tmpTask.taskCreationDate,
+                    "taskCreator" to tmpTask.taskCreator,
+                    "taskDeadline" to tmpTask.taskDeadline,
+                    "taskDescription" to tmpTask.taskDescription,
+                    "taskDocumentList" to tmpTask.taskDocumentList,
+                    "taskHistory" to tmpTask.taskHistory,
+                    "taskId" to "",
+                    "taskLinkList" to tmpTask.taskLinkList,
+                    "taskMediaList" to tmpTask.taskMediaList,
+                    "taskQuestions" to tmpTask.taskQuestions,
+                    "taskRepeat" to tmpTask.taskRepeat,
+                    "taskStatus" to tmpTask.taskStatus,
+                    "taskSubtasks" to tmpTask.taskSubtasks,
+                    "taskTag" to tmpTask.taskTag,
+                    "taskTeam" to tmpTask.taskTeam,
+                    "taskTimerHistory" to tmpTask.taskTimerHistory,
+                    "taskTitle" to tmpTask.taskTitle,
+                    "taskUsers" to tmpTask.taskUsers
                 )
 
-                selectedTask = tmpTask
+                //Add task to DB
+                db.collection("Tasks").add(taskToAdd).addOnSuccessListener { taskRef ->
+                    tmpTask.taskId = taskRef.id
 
-                for (u in selectedTask.taskUsers){
-                    u.taskList.add(selectedTask)
+                    db.collection("Tasks").document(taskRef.id)
+                        .update("taskId", taskRef.id)
+
+                    db.collection("Team").document(tmpTask.taskTeam).get()
+                        .addOnSuccessListener { d ->
+                            val teamTaskList = d.get("teamTasks") as MutableList<String>
+                            teamTaskList.add(taskRef.id)
+                            db.collection("Team").document(tmpTask.taskTeam).update("teamTasks", teamTaskList)
+                        }
+
+                    for(userRef in tmpTask.taskUsers) {
+                        db.collection("Users").document(userRef).get()
+                            .addOnSuccessListener {d ->
+                                val userTaskList = d.get("userTasks") as MutableList<String>
+                                userTaskList.add(taskRef.id)
+                                db.collection("Users").document(userRef).update("userTasks", userTaskList)
+                            }
+                    }
+
+                    addTask(tmpTask)
+
+                    val str : MutableList<String> = mutableListOf()
+                    val taskChangesTmp: String = "Title: $taskTitleValue \n"+
+                            "Description: $taskDescriptionValue \n" +
+                            "Deadline: $taskDeadlineValue \n" +
+                            "Category: $taskCategoryValue \n" +
+                            "Repeat: $taskRepeatValue \n" +
+                            "Team: ${taskTeamValue.teamName} \n" +
+                            "Users: " +
+                            taskUsersValue.map { u-> u.userNickname }.toSet().joinToString()
+
+                    str.add(0, taskChangesTmp)
+
+                    /*add creation event*/
+                    addTaskEventToHistory(
+                        Event(
+                            "Task created", SimpleDateFormat("dd/MM/yyyy").format(Date()), taskStatusValue,
+                            loggedUser.userNickname, "0", taskSubtasksValue.size.toString(), str
+                        )
+                    )
+
+                    selectedTask = tmpTask
+
+                    val taskHistoryToAdd = hashMapOf(
+                        "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                        "taskChanges" to str,
+                        "taskDoneSubtasks" to "0",
+                        "taskStatus" to taskStatusValue,
+                        "taskTotalSubtasks" to taskSubtasksValue.size.toString(),
+                        "title" to "Task Created",
+                        "user" to loggedUser.userNickname
+                    )
+
+                    db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                        selectedTask.taskHistory.add(taskHistoryRef.id)
+                        db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                    }
+
+                    for (u in taskUsersValue){
+                        u.userTasks.add("Tasks/${this.taskIdValue}")
+                    }
+
+                    loggedUser.userTasks.add(selectedTask.taskId)
+                    taskTeamValue.teamTasks.add(selectedTask.taskId)
+                    teamViewModel.allTeams.find { it.teamId == selectedTask.taskTeam }!!.teamTasks.add(selectedTask.taskId)
+                    setTaskInformation(selectedTask, db)
+                    navigateBack!!()
+                    navigateBack!!()
+                    updateOldTaskInformation()
+                    showTaskDetailsPane(selectedTask.taskId)
                 }
-
-                taskTeamValue.teamTasks.add(selectedTask)
-                setTaskInformation(selectedTask)
-                navigateBack!!()
-                navigateBack!!()
-                updateOldTaskInformation()
-                showTaskDetailsPane(selectedTask.taskId)
             } else {
                 //Saves edit to a Task.
 
@@ -519,18 +801,26 @@ class TaskViewModel : ViewModel() {
                 selectedTask.taskDeadline = taskDeadlineValue
                 selectedTask.taskTag = taskTagValue
                 selectedTask.taskCategory = taskCategoryValue
-                selectedTask.taskUsers = taskUsersValue.toMutableList()
+                selectedTask.taskUsers = taskUsersValue.map{it.userNickname}.toMutableList()
                 selectedTask.taskRepeat = taskRepeatValue
-                selectedTask.taskSubtasks = taskSubtasksValue
-                selectedTask.taskTeam = taskTeamValue
-                selectedTask.taskHistory = taskHistoryValue
+                //selectedTask.taskSubtasks = taskSubtasksValue.map{it.subtaskId}.toMutableStateList()
+                selectedTask.taskTeam = taskTeamValue.teamId
+                //selectedTask.taskHistory = taskHistoryValue.map { it.eventId }.toMutableStateList()
                 selectedTask.taskStatus = taskStatusValue
 
                 if (taskUsersValue.size>0){         //Update task status according to the number of users
-                    selectedTask.taskStatus=TaskStatus.InProgress
+                    selectedTask.taskStatus="In Progress"
                 }else{
-                    selectedTask.taskStatus=TaskStatus.Pending
+                    selectedTask.taskStatus="Pending"
                 }
+
+                db.collection("Tasks").document(selectedTask.taskId).update("taskCategory", selectedTask.taskCategory)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskDeadline", selectedTask.taskDeadline)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskDescription", selectedTask.taskDescription)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskRepeat", selectedTask.taskRepeat)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskStatus", selectedTask.taskStatus)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskTag", selectedTask.taskTag)
+                db.collection("Tasks").document(selectedTask.taskId).update("taskTitle", selectedTask.taskTitle)
 
                 //For every element, I check what was changed, so that I can add it to history
                 val taskChangesTmp: MutableList<String> = mutableListOf<String>()
@@ -595,24 +885,58 @@ class TaskViewModel : ViewModel() {
 
                 addTaskEventToHistory(
                     if(taskUsersValue.size>0) {
-                        setTaskStatus(TaskStatus.InProgress)
+                        setTaskStatus("In Progress")
+
+                        val taskHistoryToAdd = hashMapOf(
+                            "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                            "taskChanges" to taskChangesTmp,
+                            "taskDoneSubtasks" to taskSubtasksValue.filter { s -> s.subtaskState == "Completed "}.size.toString(),
+                            "taskStatus" to "In Progress",
+                            "taskTotalSubtasks" to taskSubtasksValue.size.toString(),
+                            "title" to "Task Edited",
+                            "user" to loggedUser.userNickname
+                        )
+
+                        db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                            selectedTask.taskHistory.add(taskHistoryRef.id)
+                            db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                        }
+
                         Event(
                             "Task edited",
                             SimpleDateFormat("dd/MM/yyyy").format(Date()),
-                            TaskStatus.InProgress,
-                            loggedUser,
-                            selectedTask.taskSubtasks.filter { s -> s.subtaskState == State.Completed }.size.toString(),
+                            "In Progress",
+                            loggedUser.userNickname,
+                            //selectedTask.taskSubtasks.filter { s -> s.subtaskState == State.Completed }.size.toString(),
+                            taskSubtasksValue.filter { s -> s.subtaskState == "Completed" }.size.toString(),
                             taskSubtasksValue.size.toString(),
                             taskChangesTmp
                         )
                     }else{
-                        setTaskStatus(TaskStatus.Pending)
+                        setTaskStatus("Pending")
+
+                        val taskHistoryToAdd = hashMapOf(
+                            "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                            "taskChanges" to taskChangesTmp,
+                            "taskDoneSubtasks" to taskSubtasksValue.filter { s -> s.subtaskState == "Completed "}.size.toString(),
+                            "taskStatus" to "Pending",
+                            "taskTotalSubtasks" to taskSubtasksValue.size.toString(),
+                            "title" to "Task Edited",
+                            "user" to loggedUser.userNickname
+                        )
+
+                        db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                            selectedTask.taskHistory.add(taskHistoryRef.id)
+                            db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                        }
+
                         Event(
-                            "Task edited",
+                            "Task Edited",
                             SimpleDateFormat("dd/MM/yyyy").format(Date()),
-                            TaskStatus.Pending,
-                            loggedUser,
-                            selectedTask.taskSubtasks.filter { s -> s.subtaskState == State.Completed }.size.toString(),
+                            "Pending",
+                            loggedUser.userNickname,
+                            //selectedTask.taskSubtasks.filter { s -> s.subtaskState == State.Completed }.size.toString(),
+                            taskSubtasksValue.filter { s -> s.subtaskState == "Completed "}.size.toString(),
                             taskSubtasksValue.size.toString(),
                             taskChangesTmp
                         )
@@ -621,13 +945,31 @@ class TaskViewModel : ViewModel() {
 
                 for (u in taskUsersValue) {
                     if(!oldTaskUsersValue.contains(u)) {
-                        u.taskList.add(selectedTask)
+                        u.userTasks.add("Tasks/${this.taskIdValue}")
+
+                        db.collection("Users").document(u.userNickname).get().addOnSuccessListener { d ->
+                            val userTasksList = d.get("userTasks") as MutableList<String>
+                            if(!userTasksList.contains(selectedTask.taskId)) {
+                                userTasksList.add(selectedTask.taskId)
+                                db.collection("Users").document(u.userNickname)
+                                    .update("userTasks", userTasksList)
+                            }
+                        }
                     }
                 }
 
                 for (u in oldTaskUsersValue) {
                     if(!taskUsersValue.contains(u)) {
-                        u.taskList.remove(selectedTask)
+                        u.userTasks.remove("Tasks/${this.taskIdValue}")
+
+                        db.collection("Users").document(u.userNickname).get().addOnSuccessListener { d ->
+                            val userTasksList = d.get("userTasks") as MutableList<String>
+                            if(userTasksList.contains(selectedTask.taskId)) {
+                                userTasksList.remove(selectedTask.taskId)
+                                db.collection("Users").document(u.userNickname)
+                                    .update("userTasks", userTasksList)
+                            }
+                        }
                     }
                 }
 
@@ -678,7 +1020,7 @@ class TaskViewModel : ViewModel() {
     fun clearTaskInformation() {
         //reset infos
         taskTitleValue = ""
-        taskRepeatValue = Repeat.NoRepeat
+        taskRepeatValue = "No Repeat"
         taskCategoryValue = ""
         taskDeadlineValue = ""
         taskTagValue = ""
@@ -699,23 +1041,23 @@ class TaskViewModel : ViewModel() {
         taskTeamError = ""
     }
 
-    fun setTaskInformation(selectedTask: Task) {
+    fun setTaskInformation(selectedTask: Task, db: FirebaseFirestore) {
         setTaskTitle(selectedTask.taskTitle)
         setTaskDescription(selectedTask.taskDescription)
         setTaskDeadline(selectedTask.taskDeadline)
         setTaskTag(selectedTask.taskTag)
         setTaskCategory(selectedTask.taskCategory)
-        assignTaskUsers(selectedTask.taskUsers.toMutableList())
+        assignTaskUsers(selectedTask.taskUsers.toMutableList(), db)
         setTaskRepeat(selectedTask.taskRepeat)
-        assignTaskSubtasks(selectedTask.taskSubtasks.toMutableStateList())
-        setTaskTeam(selectedTask.taskTeam)
-        assignTaskQuestions(selectedTask.taskQuestions.toMutableList())
-        assignTaskHistory(selectedTask.taskHistory)
+        assignTaskSubtasks(selectedTask.taskSubtasks.toMutableList(), db)
+        setTaskTeam(selectedTask.taskTeam, db)
+        assignTaskQuestions(selectedTask.taskQuestions.toMutableList(), db)
+        assignTaskHistory(selectedTask.taskHistory, db)
         setTaskStatus(selectedTask.taskStatus)
-        assignTaskTimerHistory(selectedTask.taskTimerHistory.toMutableList())
-        assignTaskMediaList(selectedTask.taskMediaList)
+        assignTaskTimerHistory(selectedTask.taskTimerHistory.toMutableList(), db)
+        assignTaskMediaList(selectedTask.taskMediaList, db)
         assignTaskLinkList(selectedTask.taskLinkList)
-        assignTaskDocumentList(selectedTask.taskDocumentList)
+        assignTaskDocumentList(selectedTask.taskDocumentList, db)
         setTaskTimerTitle("")
         setTaskTimer("0:00:00")
 

@@ -33,6 +33,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,6 +43,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.R
 import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.task.Task
@@ -59,13 +63,18 @@ fun ShowTimer(
     taskTimerValue: String,
     setTaskTimer: (String) -> Unit,
     taskTimerHistory: MutableList<TaskTimer>,
-    addTaskTimerHistory: (Int) -> Unit,
-    showUserInformationPane: (String) -> Unit
+    addTaskTimerHistory: (Int, Task, FirebaseFirestore) -> Unit,
+    showUserInformationPane: (String) -> Unit,
+    taskUsersValue: MutableList<User>,
+    selectedTask: Task,
+    db: FirebaseFirestore
 ) {
     var taskTimerTitleError by remember { mutableStateOf("") }
     var timerRunning by remember { mutableStateOf(false) }
     var ticks by remember { mutableIntStateOf(0) }
     val state = rememberScrollState()
+
+    var u: User
 
     Box(
         modifier = Modifier.fillMaxHeight()
@@ -98,6 +107,8 @@ fun ShowTimer(
 
                 //Show timer history
                 for (t in taskTimerHistory) {
+                    u = taskUsersValue.find { it.userNickname == t.user }!!     //When we arrive here, taskUsersValue is surely populated with the users of the task
+
                     Row(
                         modifier = Modifier
                             .border(1.dp, Color.LightGray, RoundedCornerShape(10.dp))
@@ -110,12 +121,12 @@ fun ShowTimer(
                             modifier = Modifier
                                 .weight(1f)
                                 .clickable(onClick = {
-                                    showUserInformationPane(t.user.userNickname)
+                                    showUserInformationPane(u.userNickname)
                                 })
                         ) {
                             CreateImage(
-                                photo = t.user.userImage,
-                                name = "${t.user.userFirstName} ${t.user.userLastName}",
+                                photo = if(u.userImage == null) null else u.userImage!!.toUri(),
+                                name = "${u.userFirstName} ${u.userLastName}",
                                 size = 30
                             )
                         }
@@ -131,12 +142,12 @@ fun ShowTimer(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = t.user.userNickname,
+                                    text = u.userNickname,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 17.sp,
                                     modifier = Modifier
                                         .clickable(onClick = {
-                                            showUserInformationPane(t.user.userNickname)
+                                            showUserInformationPane(u.userNickname)
                                         })
                                         .weight(4.2f)
                                 )
@@ -224,8 +235,9 @@ fun ShowTimer(
                             }
                         } else {
                             timerRunning = false
-                            addTaskTimerHistory(ticks)
-                            task.taskTimerHistory = taskTimerHistory
+                            addTaskTimerHistory(ticks, selectedTask, db)
+                            //TODO: update to DB the new timer information
+                            //task.taskTimerHistory = taskTimerHistory.map{it.timerId}.toMutableList()
                             setTaskTimer("0:00:00")
                             ticks = 0
                             setTaskTimerTitle("")

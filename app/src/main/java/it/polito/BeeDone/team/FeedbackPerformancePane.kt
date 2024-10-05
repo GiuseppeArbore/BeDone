@@ -1,5 +1,6 @@
 package it.polito.BeeDone.team
 
+import android.annotation.SuppressLint
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.border
@@ -18,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -26,8 +28,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
-import it.polito.BeeDone.task.TaskStatus
+import it.polito.BeeDone.task.Task
 import it.polito.BeeDone.teamViewModel
 import it.polito.BeeDone.utils.CreateDropdownTeamsUser
 import it.polito.BeeDone.utils.CreateKPI
@@ -35,9 +38,24 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 
+@SuppressLint("UnrememberedMutableState")
 @RequiresApi(Build.VERSION_CODES.P)
 @Composable
-fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
+fun FeedbackPerformancePane(
+    userSelected: User?,
+    selectedTeam: Team,
+    db: FirebaseFirestore
+) {
+
+    var allTasks = mutableStateListOf<Task>()
+
+    for (taskRef in selectedTeam.teamTasks){
+        db.collection("Tasks").document(taskRef).get().addOnSuccessListener {
+            taskDoc -> allTasks.add(taskDoc.toObject(Task::class.java)!!)
+        }
+    }
+
+
     BoxWithConstraints {
         //VERTICAL
         if (this.maxHeight > this.maxWidth) {               //True if the screen is in portrait mode
@@ -73,11 +91,11 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                         Spacer(modifier = Modifier.height(16.dp))
                         //KPI
                         CreateKPI(
-                            selectedTeam.teamTasks.filter { t -> (t.taskStatus == TaskStatus.Completed || t.taskStatus == TaskStatus.ExpiredCompleted) }.size,
-                            selectedTeam.teamTasks.size,
-                            selectedTeam.teamTasks.filter { t -> t.taskStatus == TaskStatus.ExpiredCompleted }.size,
-                            selectedTeam.teamTasks.filter { t ->
-                                (t.taskStatus == TaskStatus.Pending || t.taskStatus == TaskStatus.InProgress || t.taskStatus == TaskStatus.ExpiredNotCompleted) && LocalDate.parse(
+                            allTasks.filter { t -> (t.taskStatus == "Completed" || t.taskStatus == "Expired Completed") }.size,
+                            allTasks.size,
+                            allTasks.filter { t -> t.taskStatus == "Expired Completed" }.size,
+                            allTasks.filter { t ->
+                                (t.taskStatus == "Pending" || t.taskStatus == "In Progress" || t.taskStatus == "Expired Not Completed") && LocalDate.parse(
                                     t.taskDeadline,
                                     DateTimeFormatter.ofPattern("dd/MM/uuuu")
                                 ) < LocalDate.now()
@@ -90,11 +108,11 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                     Column {
                         CreateDropdownTeamsUser(
                             teamViewModel.userSelected,
-                            selectedTeam.teamUsers,
-                            teamViewModel::setTeUserSelected
+                            selectedTeam.teamMembers,
+                            teamViewModel::setTeUserSelected,
+                            db
                         )
                     }
-
 
                     if (teamViewModel.userSelected != null) {
 
@@ -109,9 +127,9 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
 
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        if (selectedTeam.teamTasks.filter { t ->
+                        if (allTasks.filter { t ->
                                 t.taskUsers.contains(
-                                    userSelected
+                                    userSelected?.userNickname
                                 )
                             }.isNotEmpty()) {
 
@@ -121,37 +139,33 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                                     .padding(horizontal = 10.dp)
                             ) {
 
-
                                 Spacer(modifier = Modifier.height(6.dp))
 
-
                                 CreateKPI(
-                                    selectedTeam.teamTasks.filter { t ->
-                                        ((t.taskStatus == TaskStatus.Completed || t.taskStatus == TaskStatus.ExpiredCompleted) && t.taskUsers.contains(
-                                            userSelected
+                                    allTasks.filter { t ->
+                                        ((t.taskStatus == "Completed" || t.taskStatus == "Expired Completed") && t.taskUsers.contains(
+                                            userSelected?.userNickname
                                         ))
                                     }.size,
-                                    selectedTeam.teamTasks.filter { t ->
+                                    allTasks.filter { t ->
                                         t.taskUsers.contains(
-                                            userSelected
+                                            userSelected?.userNickname
                                         )
                                     }.size,
-                                    selectedTeam.teamTasks.filter { t ->
-                                        (t.taskStatus == TaskStatus.ExpiredCompleted && t.taskUsers.contains(
-                                            userSelected
+                                    allTasks.filter { t ->
+                                        (t.taskStatus == "Expired Completed" && t.taskUsers.contains(
+                                            userSelected?.userNickname
                                         ))
                                     }.size,
-                                    selectedTeam.teamTasks.filter { t ->
-                                        ((t.taskStatus == TaskStatus.Pending || t.taskStatus == TaskStatus.InProgress || t.taskStatus == TaskStatus.ExpiredNotCompleted) && LocalDate.parse(
+                                    allTasks.filter { t ->
+                                        ((t.taskStatus == "Pending" || t.taskStatus == "In Progress" || t.taskStatus == "Expired Not Completed") && LocalDate.parse(
                                             t.taskDeadline,
                                             DateTimeFormatter.ofPattern("dd/MM/uuuu")
-                                        ) < LocalDate.now() && t.taskUsers.contains(userSelected))
+                                        ) < LocalDate.now() && t.taskUsers.contains(userSelected?.userNickname))
                                     }.size
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
-
                             }
-
 
                         } else {
                             Text(
@@ -159,11 +173,7 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                                 textAlign = TextAlign.Center
                             )
                         }
-
-
                     }
-
-
                 } else {
                     Text(
                         text = "The team has no task.",
@@ -171,7 +181,6 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                     )
                 }
                 Spacer(modifier = Modifier.height(16.dp))
-
             }
         } else {
             //HORIZONTAL
@@ -183,8 +192,9 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                 Row {
                     CreateDropdownTeamsUser(
                         teamViewModel.userSelected,
-                        selectedTeam.teamUsers,
-                        teamViewModel::setTeUserSelected
+                        selectedTeam.teamMembers,
+                        teamViewModel::setTeUserSelected,
+                        db
                     )
                 }
                 Spacer(modifier = Modifier.size(6.dp))
@@ -221,11 +231,11 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 //KPI
                                 CreateKPI(
-                                    selectedTeam.teamTasks.filter { t -> (t.taskStatus == TaskStatus.Completed || t.taskStatus == TaskStatus.ExpiredCompleted) }.size,
-                                    selectedTeam.teamTasks.size,
-                                    selectedTeam.teamTasks.filter { t -> t.taskStatus == TaskStatus.ExpiredCompleted }.size,
-                                    selectedTeam.teamTasks.filter { t ->
-                                        (t.taskStatus == TaskStatus.Pending || t.taskStatus == TaskStatus.InProgress || t.taskStatus == TaskStatus.ExpiredNotCompleted) && LocalDate.parse(
+                                    allTasks.filter { t -> (t.taskStatus == "Completed" || t.taskStatus == "Expired Completed") }.size,
+                                    allTasks.size,
+                                    allTasks.filter { t -> t.taskStatus == "Expired Completed" }.size,
+                                    allTasks.filter { t ->
+                                        (t.taskStatus == "Pending" || t.taskStatus == "In Progress" || t.taskStatus == "Expired Not Completed") && LocalDate.parse(
                                             t.taskDeadline,
                                             DateTimeFormatter.ofPattern("dd/MM/uuuu")
                                         ) < LocalDate.now()
@@ -263,9 +273,9 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
 
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            if (selectedTeam.teamTasks.filter { t ->
+                            if (allTasks.filter { t ->
                                     t.taskUsers.contains(
-                                        userSelected
+                                        userSelected?.userNickname
                                     )
                                 }.isNotEmpty()) {
 
@@ -280,26 +290,26 @@ fun FeedbackPerformancePane(userSelected: User?, selectedTeam: Team) {
 
 
                                     CreateKPI(
-                                        selectedTeam.teamTasks.filter { t ->
-                                            ((t.taskStatus == TaskStatus.Completed || t.taskStatus == TaskStatus.ExpiredCompleted) && t.taskUsers.contains(
-                                                userSelected
+                                        allTasks.filter { t ->
+                                            ((t.taskStatus == "Completed" || t.taskStatus == "Expired Completed") && t.taskUsers.contains(
+                                                userSelected?.userNickname
                                             ))
                                         }.size,
-                                        selectedTeam.teamTasks.filter { t ->
+                                        allTasks.filter { t ->
                                             t.taskUsers.contains(
-                                                userSelected
+                                                userSelected?.userNickname
                                             )
                                         }.size,
-                                        selectedTeam.teamTasks.filter { t ->
-                                            (t.taskStatus == TaskStatus.ExpiredCompleted && t.taskUsers.contains(
-                                                userSelected
+                                        allTasks.filter { t ->
+                                            (t.taskStatus == "Expired Completed" && t.taskUsers.contains(
+                                                userSelected?.userNickname
                                             ))
                                         }.size,
-                                        selectedTeam.teamTasks.filter { t ->
-                                            ((t.taskStatus == TaskStatus.Pending || t.taskStatus == TaskStatus.InProgress || t.taskStatus == TaskStatus.ExpiredNotCompleted) && LocalDate.parse(
+                                        allTasks.filter { t ->
+                                            ((t.taskStatus == "Pending" || t.taskStatus == "In Progress" || t.taskStatus == "Expired Not Completed") && LocalDate.parse(
                                                 t.taskDeadline,
                                                 DateTimeFormatter.ofPattern("dd/MM/uuuu")
-                                            ) < LocalDate.now() && t.taskUsers.contains(userSelected))
+                                            ) < LocalDate.now() && t.taskUsers.contains(userSelected?.userNickname))
                                         }.size
                                     )
                                     Spacer(modifier = Modifier.height(16.dp))

@@ -83,7 +83,7 @@ fun ImagePicker(
     setPhoto: (Uri?) -> Unit,
 ) {
     var hasImage by remember {
-        mutableStateOf(imgUri != null)
+        mutableStateOf(imgUri != null && imgUri.toString() != "null")
     }
     var imageUri by remember {
         mutableStateOf<Uri?>(imgUri)
@@ -107,7 +107,7 @@ fun ImagePicker(
     val context = LocalContext.current
 
     Box {
-        if (hasImage && imageUri != null) {
+        if (hasImage && imageUri != null && imageUri.toString() != "null") {
             SetImage(imageUri, 170)
             setPhoto(imageUri)
         }
@@ -253,15 +253,15 @@ fun NoImage(name: String, size: Int) {
         )
     } else {
         if(name.contains(" ")){
-            var displayName = ""
+            var newTeamName = ""
             val words = name.split(" ")
             for (i in 0 until min(words.size, 3)) {
                 if (words[i].isNotEmpty()) {
-                    displayName += words[i][0].uppercaseChar()
+                    newTeamName += words[i][0].uppercaseChar()
                 }
             }
             Text(
-                text = displayName,
+                text = newTeamName,
                 modifier = Modifier
                     .background(
                         lightBlue,

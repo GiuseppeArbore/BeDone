@@ -7,7 +7,7 @@ class TaskTimer (
     var ticks: Int,
     var date: String,
     var title: String,
-    var user: User
+    var user: String
 ) {
-    constructor() : this(0, "", "", loggedUser)
+    constructor() : this(0, "", "", loggedUser.userNickname)
 }

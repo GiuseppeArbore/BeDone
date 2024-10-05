@@ -1,6 +1,7 @@
 package it.polito.BeeDone.team
 
 import android.os.Build
+import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -33,9 +35,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -46,16 +50,111 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.PopupProperties
+import androidx.core.net.toUri
+import com.google.android.gms.tasks.Tasks
+import com.google.firebase.firestore.FirebaseFirestore
+import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.profile.loggedUser
 import it.polito.BeeDone.task.Task
-import it.polito.BeeDone.team.Role.Admin
 import it.polito.BeeDone.teamViewModel
 import it.polito.BeeDone.utils.CreateChatNotificationCircle
 import it.polito.BeeDone.utils.CreateClickableCreatorText
 import it.polito.BeeDone.utils.CreateImage
 import it.polito.BeeDone.utils.CreateRowText
 import it.polito.BeeDone.utils.CreateTeamUsersSection
+import it.polito.BeeDone.utils.LeaveTeamAndRelatedData
 import it.polito.BeeDone.utils.lightBlue
+import it.polito.BeeDone.utils.removeMemberAndRelatedData
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.util.function.Predicate
+import kotlin.math.log
+
+
+
+suspend fun removeTeamAndRelatedData(db: FirebaseFirestore, selectedTeamId: String) {
+    try {
+        // First, gather all the necessary data
+        val teamDoc = db.collection("Team").document(selectedTeamId).get().await()
+        val teamData = teamDoc.data ?: throw Exception("Team document does not exist")
+        Log.d("Firestore", "Fetched team document: $teamData")
+
+        val teamChat = teamData["teamChat"] as? List<String> ?: emptyList()
+        val teamTasks = teamData["teamTasks"] as? List<String> ?: emptyList()
+        val teamMembers = teamData["teamMembers"] as? List<String> ?: emptyList()
+
+        val userInTeamDocs = db.collection("UserInTeam").whereEqualTo("first", selectedTeamId).get().await()
+
+        val userUpdates = mutableMapOf<String, MutableList<String>>()
+        teamMembers.forEach { teamMemberId ->
+            val teamMemberDoc = db.collection("TeamMembers").document(teamMemberId).get().await()
+            val teamMemberData = teamMemberDoc.data ?: return@forEach
+
+            val userId = teamMemberData["user"] as? String ?: return@forEach
+            val userDoc = db.collection("Users").document(userId).get().await()
+            val userTeams = userDoc.get("userTeams") as? MutableList<String> ?: mutableListOf()
+
+            userInTeamDocs.documents.forEach { userInTeamDoc ->
+                val userInTeamId = userInTeamDoc.id
+                if (userTeams.contains(userInTeamId)) {
+                    userTeams.remove(userInTeamId)
+                    loggedUser.userTeams.remove(userInTeamId)
+                    userUpdates[userId] = userTeams
+                }
+            }
+        }
+
+        // Now execute all the writes in a transaction
+        db.runTransaction { transaction ->
+            // Step 1: Remove documents from the Messages collection
+            teamChat.forEach { messageId ->
+                transaction.delete(db.collection("Messages").document(messageId))
+                Log.d("Firestore", "Deleted message document: $messageId")
+            }
+
+            // Step 2: Remove documents from the Tasks collection
+            teamTasks.forEach { taskId ->
+                transaction.delete(db.collection("Tasks").document(taskId))
+                Log.d("Firestore", "Deleted task document: $taskId")
+            }
+
+            // Step 3: Remove documents from the TeamMembers collection and update User documents
+            teamMembers.forEach { teamMemberId ->
+                transaction.delete(db.collection("TeamMembers").document(teamMemberId))
+                Log.d("Firestore", "Deleted team member document: $teamMemberId")
+            }
+
+            userUpdates.forEach { (userId, userTeams) ->
+                transaction.update(db.collection("Users").document(userId), "userTeams", userTeams)
+                Log.d("Firestore", "Updated user: $userId")
+            }
+
+            // Step 4: Remove documents from the UserInTeam collection
+            userInTeamDocs.documents.forEach { userInTeamDoc ->
+                transaction.delete(db.collection("UserInTeam").document(userInTeamDoc.id))
+                Log.d("Firestore", "Deleted userInTeam document: ${userInTeamDoc.id}")
+            }
+
+            // Step 5: Remove the team document itself
+            transaction.delete(db.collection("Team").document(selectedTeamId))
+            Log.d("Firestore", "Deleted team document: $selectedTeamId")
+
+            null // Return null to indicate success
+        }.addOnSuccessListener {
+            Log.d("Firestore", "Transaction successful")
+            teamViewModel.allTeams.removeIf(Predicate { t -> t.teamId==selectedTeamId })
+            teamViewModel.showingTeams.removeIf( Predicate { t->t.teamId==selectedTeamId })
+            Log.d("Firestore" , "teamViewModel.allTeams : ${teamViewModel.allTeams.toString()}")
+        }.addOnFailureListener { e ->
+            Log.e("Firestore", "Transaction failed", e)
+        }
+    } catch (e: Exception) {
+        Log.e("Firestore", "Transaction failed with exception", e)
+    }
+}
+
 
 @Composable
 fun ShowTeamDetailsMenu(
@@ -66,14 +165,43 @@ fun ShowTeamDetailsMenu(
     showTeamChatPane: (String) -> Unit,
     teamListPane: () -> Unit,
     selectedTeam: Team,
-    allTasks: SnapshotStateList<Task>
+    allTasks: SnapshotStateList<Task>,
+    db: FirebaseFirestore,
+    hasMessagesToRead: Boolean
 ) {
-    var menuVisible by remember { mutableStateOf(false) }
+    val users = mutableListOf(TeamMember())
+    for (u in selectedTeam.teamMembers) {
+        db.collection("TeamMembers").document(u).get()
+            .addOnSuccessListener { d ->
+                if (d != null) users.add(d.toObject(TeamMember::class.java)!!)
+            }
+    }
+    val coroutineScope = rememberCoroutineScope()
+    var isLoading by remember { mutableStateOf(false) }
 
+    var menuVisible by remember { mutableStateOf(false) }
     //popup to leave team
     var showLeaveTeamPopUp by remember { mutableStateOf(false) }
     //popup to delete team
     var showDeleteTeamPopUp by remember { mutableStateOf(false) }
+
+    var memberRole by remember { mutableStateOf("") }
+    var teamMemberId by remember { mutableStateOf("") }
+    var idDelTeam by remember { mutableStateOf("") }
+
+
+    LaunchedEffect(loggedUser, selectedTeam) {
+        memberRole = selectedTeam.getRoleTeamUser(loggedUser)
+    }
+
+    LaunchedEffect(loggedUser, selectedTeam) {
+        teamMemberId=selectedTeam.getIdTeamUser(loggedUser)
+    }
+
+    LaunchedEffect(loggedUser, selectedTeam) {
+        idDelTeam=selectedTeam.getIdUserInTeam(loggedUser)
+    }
+
 
     Box {
         IconButton(onClick = { menuVisible = !menuVisible }) {
@@ -83,7 +211,7 @@ fun ShowTeamDetailsMenu(
                 modifier = Modifier.size(30.dp)
             )
 
-            if(loggedUser.userTeams.filter { it.first == selectedTeam }[0].second)
+            if (hasMessagesToRead)
                 CreateChatNotificationCircle(5, 5)
         }
 
@@ -126,7 +254,7 @@ fun ShowTeamDetailsMenu(
                             .height(40.dp)
                             .width(205.dp),
                         shape = ButtonDefaults.shape,
-                        enabled = selectedTeam.getRoleTeamUser(loggedUser) == Admin,
+                        enabled = memberRole == "Admin",
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -134,7 +262,7 @@ fun ShowTeamDetailsMenu(
                                 text = "Edit Team",
                                 textAlign = TextAlign.Center,
                                 color =
-                                if(selectedTeam.getRoleTeamUser(loggedUser) == Admin)
+                                if (memberRole == "Admin")
                                     Color.Black
                                 else
                                     Color.Gray
@@ -155,14 +283,14 @@ fun ShowTeamDetailsMenu(
                             .height(40.dp)
                             .width(205.dp),
                         shape = ButtonDefaults.shape,
-                        enabled =  if(loggedUser == selectedTeam.teamCreator) true else false,
+                        enabled = loggedUser.userNickname == selectedTeam.teamCreator,
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "Delete Team",
                                 textAlign = TextAlign.Center,
-                                color = if(loggedUser == selectedTeam.teamCreator) Color.Black else Color.Gray
+                                color = if (loggedUser.userNickname == selectedTeam.teamCreator) Color.Black else Color.Gray
                             )
                         }
                     }
@@ -179,14 +307,14 @@ fun ShowTeamDetailsMenu(
                             .height(40.dp)
                             .width(205.dp),
                         shape = ButtonDefaults.shape,
-                        enabled =  if(loggedUser != selectedTeam.teamCreator) true else false,
+                        enabled = if (loggedUser.userNickname != selectedTeam.teamCreator) true else false,
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "Leave Team",
                                 textAlign = TextAlign.Center,
-                                color = if(loggedUser != selectedTeam.teamCreator) Color.Black else Color.Gray
+                                color = if (loggedUser.userNickname != selectedTeam.teamCreator) Color.Black else Color.Gray
                             )
                         }
                     }
@@ -205,14 +333,14 @@ fun ShowTeamDetailsMenu(
                             .height(40.dp)
                             .width(205.dp),
                         shape = ButtonDefaults.shape,
-                        enabled = selectedTeam.getRoleTeamUser(loggedUser) == Admin,
+                        enabled = memberRole == "Admin",
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "Share Team",
                                 textAlign = TextAlign.Center,
-                                color = if(selectedTeam.getRoleTeamUser(loggedUser) == Admin)
+                                color = if (memberRole == "Admin")
                                     Color.Black
                                 else
                                     Color.Gray
@@ -268,14 +396,14 @@ fun ShowTeamDetailsMenu(
                                 color = Color.Black
                             )
 
-                            if(loggedUser.userTeams.filter { it.first == selectedTeam }[0].second) {
+                            if (hasMessagesToRead) {
                                 CreateChatNotificationCircle(15, 0)
                             }
                         }
                     }
                 }
 
-                if(showLeaveTeamPopUp) {
+                if (showLeaveTeamPopUp) {
                     Column {
                         val dialogWidth = 400.dp / (1.3F)
                         val dialogHeight = 150.dp
@@ -309,12 +437,25 @@ fun ShowTeamDetailsMenu(
                                         )
 
                                         Spacer(modifier = Modifier.height(10.dp))
-
+                                                //LEAVE
                                         FloatingActionButton(
                                             onClick = {
-                                                selectedTeam.deleteUser(loggedUser)
-                                                teamListPane()
-                                                showLeaveTeamPopUp = false
+
+                                                coroutineScope.launch {
+                                                    isLoading = true
+                                                    LeaveTeamAndRelatedData(db, selectedTeam, teamListPane, idDelTeam)
+                                                    isLoading = false
+                                                }
+
+                                                if (!isLoading){
+                                                    //teamViewModel.allTeams.removeIf(Predicate { t -> t.teamId==selectedTeam.teamId })
+                                                    //teamViewModel.showingTeams.removeIf( Predicate { t->t.teamId==selectedTeam.teamId })
+                                                    Log.d("Firestore2", "rimuovendo $idDelTeam")
+                                                    //loggedUser.userTeams.remove(idDelTeam);
+                                                    menuVisible=false
+                                                    showLeaveTeamPopUp = false
+                                                }
+
                                             },
                                             containerColor = Color.White,
                                             shape = RoundedCornerShape(20.dp),
@@ -351,7 +492,7 @@ fun ShowTeamDetailsMenu(
                     }
                 }
 
-                if(showDeleteTeamPopUp) {
+                if (showDeleteTeamPopUp) {
                     Column {
                         val dialogWidth = 420.dp / (1.3F)
                         val dialogHeight = 150.dp
@@ -386,16 +527,24 @@ fun ShowTeamDetailsMenu(
 
                                         Spacer(modifier = Modifier.height(10.dp))
 
+                                        //delete of team
                                         FloatingActionButton(
                                             onClick = {
-                                                for (u in selectedTeam.teamUsers) {
-                                                    for(t in selectedTeam.teamTasks) {
-                                                        allTasks.remove(t)
-                                                        u.user.taskList.remove(t)
-                                                    }
-                                                    u.user.deleteTeam(selectedTeam)
+                                                coroutineScope.launch {
+                                                    removeTeamAndRelatedData(db, selectedTeam.teamId)
                                                 }
-                                                selectedTeam.teamCreator.deleteTeam(selectedTeam)
+                                                //todo verificare
+                                                /*
+                                                for (u in users) {
+                                                    for (t in selectedTeam.teamTasks) {
+                                                        //allTasks.remove(t)
+                                                        u.taskList.remove(t)
+                                                    }
+                                                    u.deleteTeam(selectedTeam)
+                                                }
+
+                                                 */
+                                                loggedUser.deleteTeam(selectedTeam)     //The team creator is the logged user, otherwise it would not be possible to delete the team
                                                 teamViewModel.allTeams.remove(selectedTeam)
                                                 showDeleteTeamPopUp = false
                                                 teamListPane()
@@ -439,6 +588,8 @@ fun ShowTeamDetailsMenu(
     }
 }
 
+
+
 @RequiresApi(Build.VERSION_CODES.P)                         //Denotes that the annotated element should only be called on the given API level or higher. Needed for the Profile Image
 @Composable
 fun ShowTeamDetailsPane(
@@ -446,8 +597,11 @@ fun ShowTeamDetailsPane(
     teamTaskListPane: (String) -> Unit,
     userChatPane: (String) -> Unit,
     showUserInformationPane: (String) -> Unit,
-    teamListPane: () -> Unit
+    teamListPane: () -> Unit,
+    db: FirebaseFirestore
 ) {
+    Log.d("xxx" , "entra in showTeamdEtailsPAne")
+
     BoxWithConstraints {
         val maxH = this.maxHeight
         if (this.maxHeight > this.maxWidth) {               //True if the screen is in portrait mode
@@ -456,7 +610,11 @@ fun ShowTeamDetailsPane(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(state = rememberScrollState())
-                    .padding(start = 16.dp, end = 16.dp, bottom = 50.dp),     //Padding is needed in order to leave 16dp from left and right borders
+                    .padding(
+                        start = 16.dp,
+                        end = 16.dp,
+                        bottom = 50.dp
+                    ),     //Padding is needed in order to leave 16dp from left and right borders
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 //Team image
@@ -467,8 +625,9 @@ fun ShowTeamDetailsPane(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
-                    CreateImage(team.teamImage, team.teamName, 170)
+                    CreateImage(team.teamImage.toUri(), team.teamName, 170)
                 }
+
 
                 Column(
                     modifier = Modifier
@@ -487,10 +646,19 @@ fun ShowTeamDetailsPane(
                     CreateRowText(contentDescription = "Category", text = team.teamCategory)
 
                     //Creation Date
-                    CreateRowText(contentDescription = "Creation date", text = team.teamCreationDate)
+                    CreateRowText(
+                        contentDescription = "Creation date",
+                        text = team.teamCreationDate
+                    )
 
                     //Team Creator
-                    CreateClickableCreatorText(contentDescription = "Creator", creator = team.teamCreator, showUserInformationPane = showUserInformationPane)
+                    CreateClickableCreatorText(
+                        contentDescription = "Creator",
+                        creator = team.teamCreator,
+                        showUserInformationPane = showUserInformationPane,
+                        db
+                    )
+
 
                     //Team members
                     CreateTeamUsersSection(
@@ -499,12 +667,12 @@ fun ShowTeamDetailsPane(
                         showUserInformationPane = showUserInformationPane,
                         teamListPane = teamListPane
                     )
-                    
                     Spacer(modifier = Modifier.height(10.dp))
                 }
                 Spacer(modifier = Modifier.height(16.dp))
             }
             Spacer(modifier = Modifier.height(60.dp))
+
 
             //button to view team's tasks
             FloatingActionButton(
@@ -525,6 +693,8 @@ fun ShowTeamDetailsPane(
 
                 )
             }
+
+
         } else {
             //HORIZONTAL
             Row(
@@ -543,7 +713,7 @@ fun ShowTeamDetailsPane(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Spacer(modifier = Modifier.height(3.dp))
-                    CreateImage(team.teamImage, team.teamName, 160)
+                    CreateImage(team.teamImage.toUri(), team.teamName, 160)
 
                     //button to view team's tasks
                     FloatingActionButton(
@@ -583,16 +753,22 @@ fun ShowTeamDetailsPane(
                         CreateRowText(contentDescription = "Team name", text = team.teamName)
 
                         //Description
-                        CreateRowText(contentDescription = "Description", text = team.teamDescription)
+                        CreateRowText(
+                            contentDescription = "Description",
+                            text = team.teamDescription
+                        )
 
                         //Category
                         CreateRowText(contentDescription = "Category", text = team.teamCategory)
 
                         //Creation Date
-                        CreateRowText(contentDescription = "Creation date", text = team.teamCategory)
+                        CreateRowText(
+                            contentDescription = "Creation date",
+                            text = team.teamCategory
+                        )
 
                         //Team Creator
-                        CreateRowText(contentDescription = "Creator", text = team.teamCreator.userNickname)
+                        CreateRowText(contentDescription = "Creator", text = team.teamCreator)
 
                         //Team members
                         CreateTeamUsersSection(
@@ -605,9 +781,14 @@ fun ShowTeamDetailsPane(
                         Spacer(modifier = Modifier.height(10.dp))
                     }
                     Spacer(modifier = Modifier.height(16.dp))
-
                 }
             }
+
+
         }
     }
+
+
+
 }
+    

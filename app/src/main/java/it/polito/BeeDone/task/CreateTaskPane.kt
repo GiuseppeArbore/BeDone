@@ -14,11 +14,13 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.profile.loggedUser
 import it.polito.BeeDone.team.Team
@@ -57,15 +59,18 @@ fun CreateTaskPane(
     setTaskUsers: (User) -> Unit,
     deleteTaskUsers: (User) -> Unit,
 
-    taskRepeatValue: Repeat,
-    setTaskRepeat: (Repeat) -> Unit,
+    taskRepeatValue: String,
+    setTaskRepeat: (String) -> Unit,
 
     taskTeamValue: Team,
     taskTeamError: String,
-    setTaskTeam: (Team) -> Unit,
+    setTaskTeam: (String, FirebaseFirestore) -> Unit,
 
+    allTeams: MutableList<Team> = mutableListOf(),
     selectedTeam: Team?,
-    createTaskPaneFromTeam: (String) -> Unit
+    createTaskPaneFromTeam: (String) -> Unit,
+
+    db: FirebaseFirestore
 ) {
 
     val isImeVisible by rememberImeState()
@@ -135,23 +140,26 @@ fun CreateTaskPane(
 
                 if (selectedTeam == null) {
                     //TeamTask
-                    CreateDropdownTeams(taskTeamValue, taskTeamError, setTaskTeam, loggedUser.userTeams, createTaskPaneFromTeam)
+                    CreateDropdownTeams(taskTeamValue, taskTeamError, setTaskTeam, allTeams, createTaskPaneFromTeam, db)
                 } else {
-                        setTaskTeam(selectedTeam)
-                        CreateTextFieldNoError(
-                        value = selectedTeam.teamName,
-                        setValue = setTaskTag,
-                        label = "Team",
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.LightGray,
-                            focusedLabelColor = Color.LightGray,
-                            focusedTextColor = Color.LightGray,
-                            unfocusedTextColor = Color.LightGray,
-                            unfocusedBorderColor = Color.LightGray,
-                            unfocusedLabelColor = Color.LightGray,
-                        ),
-                        readOnly = true
-                    )
+                    LaunchedEffect(selectedTeam) {
+                        setTaskTeam(selectedTeam.teamId, db)
+                    }
+
+                    CreateTextFieldNoError(
+                    value = selectedTeam.teamName,
+                    setValue = setTaskTag,
+                    label = "Team",
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.LightGray,
+                        focusedLabelColor = Color.LightGray,
+                        focusedTextColor = Color.LightGray,
+                        unfocusedTextColor = Color.LightGray,
+                        unfocusedBorderColor = Color.LightGray,
+                        unfocusedLabelColor = Color.LightGray,
+                    ),
+                    readOnly = true
+                )
                 }
 
                 if (selectedTeam!=null) {
@@ -159,7 +167,8 @@ fun CreateTaskPane(
                         taskTeamValue,
                         taskUsersValue,
                         setTaskUsers,
-                        deleteTaskUsers
+                        deleteTaskUsers,
+                        db
                     )
                 }else{
                     Text(text = "Select a team to select a user")
@@ -225,8 +234,11 @@ fun CreateTaskPane(
 
                 if (selectedTeam == null) {
                     //TeamTask
-                    CreateDropdownTeams(taskTeamValue, taskTeamError, setTaskTeam, loggedUser.userTeams, createTaskPaneFromTeam)
+                    CreateDropdownTeams(taskTeamValue, taskTeamError, setTaskTeam, allTeams, createTaskPaneFromTeam, db)
                 } else {
+                    LaunchedEffect(selectedTeam) {
+                        setTaskTeam(selectedTeam.teamId, db)
+                    }
                     CreateTextFieldNoError(
                         value = selectedTeam.teamName,
                         setValue = setTaskTag,
@@ -250,7 +262,8 @@ fun CreateTaskPane(
                         taskTeamValue,
                         taskUsersValue,
                         setTaskUsers,
-                        deleteTaskUsers
+                        deleteTaskUsers,
+                        db
                     )
                 }else{
                     Text(text = "Select a team to select a user")

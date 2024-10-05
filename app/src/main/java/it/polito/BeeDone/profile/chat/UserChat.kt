@@ -12,9 +12,9 @@ import it.polito.BeeDone.profile.User
  * @param messages: list of messages sent between the two users
  */
 class UserChat (
-    var user1: User,
-    var user2: User,
+    var user1: String,
+    var user2: String,
     var messages: SnapshotStateList<Message>
 ) {
-    constructor() : this(User(), User(), mutableStateListOf())
+    constructor() : this("", "", mutableStateListOf())
 }

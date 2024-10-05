@@ -5,7 +5,7 @@ import it.polito.BeeDone.profile.User
 class Answer (
     var text: String,
     var date: String,
-    var user: User
+    var user: String
 ) {
-    constructor() : this("", "", User())
+    constructor() : this("", "", "")
 }

@@ -1,6 +1,7 @@
 package it.polito.BeeDone.utils
 
 
+import android.util.Log
 import android.view.ViewTreeObserver
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -37,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,9 +55,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.profile.loggedUser
-import it.polito.BeeDone.task.Repeat
 import it.polito.BeeDone.team.Team
 import it.polito.BeeDone.team.TeamMember
 import it.polito.BeeDone.teamViewModel
@@ -86,7 +89,7 @@ fun CreateTextFieldError(
         value = value,
         onValueChange = setValue,
         label = { Text(label) },
-        placeholder = { Text(placeholder)},
+        placeholder = { Text(placeholder) },
         isError = error.isNotBlank(),
         keyboardOptions = KeyboardOptions.Default.copy(keyboardType = keyboardType),
         shape = myShape,
@@ -171,7 +174,6 @@ fun rememberImeState(): State<Boolean> {
 }
 
 
-
 /*prende tutti gli user del team selezionato, verifica chi è statoa ssegnato al task e chi no;
 in base a  questa verifica fa add o delete dell'utente al click;
  */
@@ -181,7 +183,8 @@ fun CreateDropdownProfiles(
     teamValue: Team, //team di riferimento
     taskUsersValue: MutableList<User>, //utenti assegnati al task
     setTaskUsers: (User) -> Unit, //per aggiornare utenti assegnati al task
-    deleteTaskUsers: (User) -> Unit
+    deleteTaskUsers: (User) -> Unit,
+    db: FirebaseFirestore
 ) {
     var isExpanded by remember {            //Used to decide wether the DropDown is expanded or not
         mutableStateOf(false)
@@ -220,35 +223,64 @@ fun CreateDropdownProfiles(
                 .background(Color.White)
                 .padding(10.dp)
         ) {
-            for (t in teamValue.teamUsers){
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier
-                        .border(1.dp, Color.LightGray, RoundedCornerShape(15.dp))
-                        .padding(horizontal = 10.dp)
-                ) {
-                    Text(
-                        text = if(loggedUser != t.user) t.user.userNickname else "@You",
-                        modifier = Modifier.fillMaxWidth(0.9f)
-                    )
+            for (teamMemberRef in teamValue.teamMembers) {
+                var loading by remember { mutableStateOf(true) }
 
-                    if (taskUsersValue.contains(t.user)) {
-                        IconButton(onClick = {
-                            showPopUp = !showPopUp
-                            clickedUser = t.user
+                var user by remember {
+                    mutableStateOf(User())
+                }
+                var userRef by remember { mutableStateOf(TeamMember()) }
+
+                LaunchedEffect(teamMemberRef) {
+                    db.collection("TeamMembers").document(teamMemberRef).get().addOnSuccessListener { teamMemberDoc ->
+                        userRef = teamMemberDoc.toObject(TeamMember::class.java)!!
+
+                        db.collection("Users").document(userRef.user).get().addOnSuccessListener { userDoc ->
+                            user = userDoc.toObject(User::class.java)!!
+                            loading = false
                         }
-                        ) {
-                            Icon(Icons.Outlined.Delete, "Delete")
+                        .addOnFailureListener { e ->
+                            Log.w("Firestore", "Error getting documents", e)
+                            loading = false
                         }
                     }
-                    else {
-                        IconButton(onClick = {
-                            showPopUp = !showPopUp
-                            clickedUser = t.user
-                        }
-                        ) {
-                            Icon(Icons.Outlined.AddCircle, "Delete")
+                    .addOnFailureListener { e ->
+                        Log.w("Firestore", "Error getting documents", e)
+                        loading = false
+                    }
+                }
+
+                if (loading) {
+                    CircularProgressIndicator()
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .border(1.dp, Color.LightGray, RoundedCornerShape(15.dp))
+                            .padding(horizontal = 10.dp)
+                    ) {
+                        Text(
+                            text = if (loggedUser != user) user.userNickname else "@You",
+                            modifier = Modifier.fillMaxWidth(0.9f)
+                        )
+
+                        if (taskUsersValue.contains(user)) {
+                            IconButton(onClick = {
+                                showPopUp = !showPopUp
+                                clickedUser = user
+                            }
+                            ) {
+                                Icon(Icons.Outlined.Delete, "Delete")
+                            }
+                        } else {
+                            IconButton(onClick = {
+                                showPopUp = !showPopUp
+                                clickedUser = user
+                            }
+                            ) {
+                                Icon(Icons.Outlined.AddCircle, "Delete")
+                            }
                         }
                     }
                 }
@@ -281,7 +313,7 @@ fun CreateDropdownProfiles(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
-                            if(taskUsersValue.contains(clickedUser)) {
+                            if (taskUsersValue.contains(clickedUser)) {
                                 Button(
                                     onClick = {
                                         deleteTaskUsers(clickedUser!!)
@@ -294,10 +326,12 @@ fun CreateDropdownProfiles(
                                         .height(50.dp)
                                         .width(250.dp)
                                 ) {
-                                    Text(text = "Remove ${if(loggedUser != clickedUser) clickedUser!!.userNickname else "@You"} from task", color = Color.Black)
+                                    Text(
+                                        text = "Remove ${if (loggedUser != clickedUser) clickedUser!!.userNickname else "@You"} from task",
+                                        color = Color.Black
+                                    )
                                 }
-                            }
-                            else {
+                            } else {
                                 Button(
                                     onClick = {
                                         setTaskUsers(clickedUser!!)
@@ -310,7 +344,10 @@ fun CreateDropdownProfiles(
                                         .height(50.dp)
                                         .width(250.dp)
                                 ) {
-                                    Text(text = "Add ${if(loggedUser != clickedUser) clickedUser!!.userNickname else "@You"} to task", color = Color.Black)
+                                    Text(
+                                        text = "Add ${if (loggedUser != clickedUser) clickedUser!!.userNickname else "@You"} to task",
+                                        color = Color.Black
+                                    )
                                 }
                             }
 
@@ -361,8 +398,8 @@ fun userListToString(taskUsersValue: List<String>): String {
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun CreateDropdownRepeat(
-    value: Repeat,
-    setValue: (Repeat) -> Unit
+    value: String,
+    setValue: (String) -> Unit
 ) {
     var isExpanded by remember {            //Used to decide wether the DropDown is expanded or not
         mutableStateOf(false)
@@ -373,7 +410,7 @@ fun CreateDropdownRepeat(
         onExpandedChange = { isExpanded = it }
     ) {
         OutlinedTextField(
-            value = addSpacesToSentence(value.toString()),
+            value = value,
             onValueChange = {},
             readOnly = true,
             label = { Text(text = "Repeat") },
@@ -399,7 +436,7 @@ fun CreateDropdownRepeat(
             DropdownMenuItem(
                 text = { Text("No Repeat") },
                 onClick = {
-                    setValue(Repeat.NoRepeat)
+                    setValue("No Repeat")
                     isExpanded = false
                 },
             )
@@ -407,7 +444,7 @@ fun CreateDropdownRepeat(
             DropdownMenuItem(
                 text = { Text("Once per Week") },
                 onClick = {
-                    setValue(Repeat.OncePerWeek)
+                    setValue("Once Per Week")
                     isExpanded = false
                 }
             )
@@ -415,7 +452,7 @@ fun CreateDropdownRepeat(
             DropdownMenuItem(
                 text = { Text("Once every two Weeks") },
                 onClick = {
-                    setValue(Repeat.OnceEveryTwoWeeks)
+                    setValue("Once Every Two Weeks")
                     isExpanded = false
                 }
             )
@@ -423,7 +460,7 @@ fun CreateDropdownRepeat(
             DropdownMenuItem(
                 text = { Text("Once per Month") },
                 onClick = {
-                    setValue(Repeat.OncePerMonth)
+                    setValue("Once Per Month")
                     isExpanded = false
                 }
             )
@@ -456,9 +493,10 @@ fun addSpacesToSentence(text: String): String {
 fun CreateDropdownTeams(
     value: Team?,
     error: String,
-    setValue: (Team) -> Unit,
-    teams: MutableList<Pair<Team, Boolean>>,
-    createTaskPaneFromTeam: (String) -> Unit
+    setValue: (String, FirebaseFirestore) -> Unit,
+    allTeams: MutableList<Team>,
+    createTaskPaneFromTeam: (String) -> Unit,
+    db: FirebaseFirestore
 ) {
     var isExpanded by remember {            //Used to decide wether the DropDown is expanded or not
         mutableStateOf(false)
@@ -466,7 +504,7 @@ fun CreateDropdownTeams(
 
     ExposedDropdownMenuBox(
         expanded = isExpanded,
-        onExpandedChange = { isExpanded = it}
+        onExpandedChange = { isExpanded = it }
     ) {
         OutlinedTextField(
             value = addSpacesToSentence(value!!.teamName),
@@ -490,17 +528,17 @@ fun CreateDropdownTeams(
 
         ExposedDropdownMenu(
             expanded = isExpanded,
-            onDismissRequest = { isExpanded = false},
+            onDismissRequest = { isExpanded = false },
             modifier = Modifier.background(Color.White)
         ) {
-            for (t in teams){
+            for (t in allTeams) {
                 DropdownMenuItem(
-                    text = { Text(t.first.teamName) },
+                    text = { Text(t.teamName) },
                     onClick = {
-                        setValue(t.first)
+                        setValue(t.teamId, db)
                         //selectedTeam=t
                         isExpanded = false
-                        createTaskPaneFromTeam(t.first.teamId)                //Call the same page, but with a teamId
+                        createTaskPaneFromTeam(t.teamId)                //Call the same page, but with a teamId
                     },
                 )
             }
@@ -518,11 +556,18 @@ fun CreateDropdownTeams(
 @OptIn(ExperimentalMaterial3Api::class)
 fun CreateDropdownTeamsUser(
     value: User?,
-    users: List<TeamMember>,
-    setValue: (User) -> Unit
+    usersRef: List<String>,
+    setValue: (User) -> Unit,
+    db: FirebaseFirestore
 ) {
     var isExpanded by remember {            //Used to decide wether the DropDown is expanded or not
         mutableStateOf(false)
+    }
+
+    var users = mutableListOf<TeamMember>()
+    for (u in usersRef){
+        db.collection("TeamMembers").document(u).get()
+            .addOnSuccessListener { d-> users.add(d.toObject(TeamMember::class.java)!!) }
     }
 
     ExposedDropdownMenuBox(
@@ -553,12 +598,17 @@ fun CreateDropdownTeamsUser(
             onDismissRequest = { isExpanded = false },
             modifier = Modifier.background(Color.White)
         ) {
-            for (u in users){
+            for (teamMemberRef in users) {
+                var user = User()
+                db.collection("TeamMembers").document(teamMemberRef.user).get().addOnSuccessListener { userDoc ->
+                    user = userDoc.toObject(User::class.java)!!
+                }
+
                 DropdownMenuItem(
-                    text = { Text(u.user.userNickname) },
+                    text = { Text(user.userNickname) },
                     onClick = {
-                        teamViewModel.setTeUserSelected(u.user)
-                        setValue(u.user)
+                        teamViewModel.setTeUserSelected(user)
+                        setValue(user)
                         //selectedUser=u.user
                         isExpanded = false
                     },

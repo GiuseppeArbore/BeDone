@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.team.Team
 import it.polito.BeeDone.utils.CreateDropdownProfiles
@@ -59,10 +60,11 @@ fun EditTaskPane(
     setTaskUsers: (User) -> Unit,
     deleteTaskUsers: (User) -> Unit,
 
-    taskRepeatValue: Repeat,
-    setTaskRepeat: (Repeat) -> Unit,
+    taskRepeatValue: String,
+    setTaskRepeat: (String) -> Unit,
 
-    taskTeamValue: Team
+    taskTeamValue: Team,
+    db: FirebaseFirestore
 ) {
     val isImeVisible by rememberImeState()
 
@@ -150,7 +152,8 @@ fun EditTaskPane(
                     taskTeamValue,
                     taskUsersValue,
                     setTaskUsers,
-                    deleteTaskUsers
+                    deleteTaskUsers,
+                    db
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))

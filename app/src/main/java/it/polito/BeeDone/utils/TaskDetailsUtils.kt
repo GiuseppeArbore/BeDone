@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -47,12 +48,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.R
 import it.polito.BeeDone.profile.loggedUser
-import it.polito.BeeDone.task.State
 import it.polito.BeeDone.task.Subtask
 import it.polito.BeeDone.task.Task
-import it.polito.BeeDone.task.TaskStatus
 import it.polito.BeeDone.task.history.Event
 import it.polito.BeeDone.task.setState
 import java.text.SimpleDateFormat
@@ -91,7 +91,8 @@ fun CreateAddSubtaskSection(
     selectedTask: Task,
     taskSubtasks: MutableList<Subtask>,
     addTaskEventToHistory: (Event) -> Unit,
-    addSubtaskToTask: (Subtask) -> Unit
+    addSubtaskToTask: (Subtask) -> Unit,
+    db: FirebaseFirestore
 ) {
     var showPopUp by remember { mutableStateOf(false) } // -> STATE
 
@@ -188,21 +189,49 @@ fun CreateAddSubtaskSection(
                                     onClick = {
                                         //add subtask
                                         if (subtaskValue.isNotEmpty()) {
-                                            val tmpSub=Subtask(subtaskValue, State.NotCompleted)
-                                            //taskSubtasks.add(tmpSub)
+                                            val tmpSub=Subtask("", subtaskValue, "Not Completed")
+
+                                            val subtaskToAdd = hashMapOf(
+                                                "subtaskState" to "Not Completed",
+                                                "subtaskTitle" to subtaskValue
+                                            )
+
+                                            db.collection("Subtasks").add(subtaskToAdd).addOnSuccessListener { subtaskRef ->
+                                                tmpSub.subtaskId = subtaskRef.id
+                                                db.collection("Subtasks").document(subtaskRef.id).update("subtaskId", subtaskRef.id)
+                                                selectedTask.taskSubtasks.add(subtaskRef.id)
+                                                db.collection("Tasks").document(selectedTask.taskId).update("taskSubtasks", selectedTask.taskSubtasks)
+                                            }
+
                                             addSubtaskToTask(tmpSub)
-                                            selectedTask.taskSubtasks.add(tmpSub)
+
                                             addTaskEventToHistory(
                                                 Event(
                                                     "Subtask added",
                                                     SimpleDateFormat("dd/MM/yyyy").format(Date()),
-                                                    TaskStatus.Completed,
-                                                    loggedUser,
-                                                    selectedTask.taskSubtasks.filter {s -> s.subtaskState == State.Completed}.size.toString(),
+                                                    selectedTask.taskStatus,
+                                                    loggedUser.userNickname,
+                                                    taskSubtasks.filter {s -> s.subtaskState == "Completed"}.size.toString(),
                                                     taskSubtasks.size.toString(),
                                                     mutableListOf("Added '$subtaskValue' subtask")
                                                 )
                                             )
+
+                                            val taskHistoryToAdd = hashMapOf(
+                                                "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                                                "taskChanges" to mutableListOf("Added '$subtaskValue' subtask"),
+                                                "taskDoneSubtasks" to taskSubtasks.filter {s -> s.subtaskState == "Completed"}.size.toString(),
+                                                "taskStatus" to selectedTask.taskStatus,
+                                                "taskTotalSubtasks" to taskSubtasks.size.toString(),
+                                                "title" to "Subtask added",
+                                                "user" to loggedUser.userNickname
+                                            )
+
+                                            db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                                                selectedTask.taskHistory.add(taskHistoryRef.id)
+                                                db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                                            }
+
                                             subtaskValue = "" // Reset text field after adding subtask
                                             showPopUp = false
                                         } else {
@@ -238,11 +267,12 @@ fun CreateAddSubtaskSection(
 fun CreateViewSubtasksSection(
     selectedTask: Task,
     taskSubtasks: MutableList<Subtask>,
-    addTaskEventToHistory: (Event) -> Unit
+    addTaskEventToHistory: (Event) -> Unit,
+    db: FirebaseFirestore
 ) {
     val (expanded, setExpanded) = remember { mutableStateOf(false) }
     var showPopUp by remember { mutableStateOf(false) }
-    var subtask by remember { mutableStateOf<Subtask?>(null) } //I save the item to remove it from the list
+    var subtaskIndexToRemove by remember { mutableIntStateOf(-1) } //I save the index of the item to remove it from the list
     var titleSubtask by remember { mutableStateOf("") }
 
     Row(
@@ -278,7 +308,7 @@ fun CreateViewSubtasksSection(
     }
 
     if (expanded) {
-        for (s in taskSubtasks) {
+        for (i in 0..<taskSubtasks.size) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
@@ -287,7 +317,7 @@ fun CreateViewSubtasksSection(
                     .padding(horizontal = 10.dp)
             ) {
                 Text(
-                    text = s.subtaskTitle,
+                    text = taskSubtasks[i].subtaskTitle,
                     modifier = Modifier
                         .fillMaxWidth(0.9f)
                         .padding(8.dp)
@@ -295,11 +325,11 @@ fun CreateViewSubtasksSection(
 
                 //I check whether the status of the subtask is completed
                 //or not, and show the respective icon
-                if (s.subtaskState == State.NotCompleted) {
+                if (taskSubtasks[i].subtaskState == "Not Completed") {
                     IconButton(onClick = {
                         showPopUp = !showPopUp
-                        subtask = s
-                        titleSubtask = s.subtaskTitle
+                        subtaskIndexToRemove = i
+                        titleSubtask = taskSubtasks[i].subtaskTitle
                     }
                     ) {
                         Icon(
@@ -362,19 +392,36 @@ fun CreateViewSubtasksSection(
 
                             Button(
                                 onClick = {
-                                    setState(subtask)
+                                    setState(taskSubtasks[subtaskIndexToRemove])
 
                                     addTaskEventToHistory(
                                         Event(
                                             "Subtask completed",
                                             SimpleDateFormat("dd/MM/yyyy").format(Date()),
                                             selectedTask.taskStatus,
-                                            loggedUser,
-                                            selectedTask.taskSubtasks.filter {s -> s.subtaskState == State.Completed}.size.toString(),
+                                            loggedUser.userNickname,
+                                            taskSubtasks.filter {s -> s.subtaskState == "Completed"}.size.toString(),
                                             taskSubtasks.size.toString(),
                                             mutableListOf("Completed '$titleSubtask' subtask")
                                         )
                                     )
+
+                                    val taskHistoryToAdd = hashMapOf(
+                                        "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                                        "taskChanges" to mutableListOf("Completed '$titleSubtask' subtask"),
+                                        "taskDoneSubtasks" to taskSubtasks.filter {s -> s.subtaskState == "Completed"}.size.toString(),
+                                        "taskStatus" to selectedTask.taskStatus,
+                                        "taskTotalSubtasks" to taskSubtasks.size.toString(),
+                                        "title" to "Subtask completed",
+                                        "user" to loggedUser.userNickname
+                                    )
+
+                                    db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                                        selectedTask.taskHistory.add(taskHistoryRef.id)
+                                        db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                                    }
+
+                                    db.collection("Subtasks").document(taskSubtasks[subtaskIndexToRemove].subtaskId).update("subtaskState", "Completed")
 
                                     showPopUp = false
                                 },
@@ -388,21 +435,41 @@ fun CreateViewSubtasksSection(
 
                             Button(
                                 onClick = {
-                                    taskSubtasks.remove(subtask)
-                                    selectedTask.taskSubtasks.remove(subtask)
+                                    db.collection("Subtasks").document(taskSubtasks[subtaskIndexToRemove].subtaskId).get().addOnSuccessListener { d ->
+                                        d.reference.delete()
+                                    }
+
                                     addTaskEventToHistory(
                                         Event(
                                             "Subtask removed",
                                             SimpleDateFormat("dd/MM/yyyy").format(Date()),
                                             selectedTask.taskStatus,
-                                            loggedUser,
-                                            selectedTask.taskSubtasks.filter {s -> s.subtaskState == State.Completed}.size.toString(),
+                                            loggedUser.userNickname,
+                                            taskSubtasks.filter {s -> s.subtaskState == "Completed"}.size.toString(),
                                             taskSubtasks.size.toString(),
                                             mutableListOf("Removed '$titleSubtask' subtask")
                                         )
                                     )
 
-                                    showPopUp = false
+                                    val taskHistoryToAdd = hashMapOf(
+                                        "date" to SimpleDateFormat("dd/MM/yyyy").format(Date()),
+                                        "taskChanges" to mutableListOf("Removed '$subtaskValue' subtask"),
+                                        "taskDoneSubtasks" to taskSubtasks.filter {s -> s.subtaskState == "Completed"}.size.toString(),
+                                        "taskStatus" to selectedTask.taskStatus,
+                                        "taskTotalSubtasks" to taskSubtasks.size.toString(),
+                                        "title" to "Subtask removed",
+                                        "user" to loggedUser.userNickname
+                                    )
+
+                                    db.collection("TaskHistory").add(taskHistoryToAdd).addOnSuccessListener {taskHistoryRef ->
+                                        selectedTask.taskHistory.add(taskHistoryRef.id)
+                                        db.collection("Tasks").document(selectedTask.taskId).update("taskHistory", selectedTask.taskHistory)
+                                    }
+
+                                    selectedTask.taskSubtasks.remove(taskSubtasks[subtaskIndexToRemove].subtaskId)
+                                    taskSubtasks.remove(taskSubtasks[subtaskIndexToRemove])
+
+                                    db.collection("Tasks").document(selectedTask.taskId).update("taskSubtasks", selectedTask.taskSubtasks).addOnSuccessListener { showPopUp = false }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                                 modifier = Modifier.border(2.dp, Color.Red, ButtonDefaults.shape)

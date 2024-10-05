@@ -1,5 +1,6 @@
 package it.polito.BeeDone.utils.questions_answers
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,12 +21,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,6 +40,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
+import com.google.firebase.firestore.FirebaseFirestore
 import it.polito.BeeDone.profile.User
 import it.polito.BeeDone.utils.CreateImage
 import it.polito.BeeDone.utils.CreateTextFieldNoError
@@ -40,15 +49,22 @@ import it.polito.BeeDone.utils.CreateTextFieldNoError
 @Composable
 fun ShowAnswers(
     answers: MutableList<Answer>,
-    setAnswers: (String, Question) -> Unit,
-    assignAnswers: (MutableList<Answer>) -> Unit,
+    setAnswers: (String, Question, FirebaseFirestore) -> Unit,
+    assignAnswers: (MutableList<String>, FirebaseFirestore) -> Unit,
     answerValue: String,
     setAnswer: (String) -> Unit,
     selectedQuestion: Question,
-    showUserInformationPane: (String) -> Unit
+    showUserInformationPane: (String) -> Unit,
+    db: FirebaseFirestore
 ) {
     val state = rememberScrollState()               //Needed for the scroll
-    assignAnswers(selectedQuestion.answers)
+
+    var answersLoaded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedQuestion, db) {
+        assignAnswers(selectedQuestion.answers, db)
+        answersLoaded = true
+    }
 
     Scaffold(
         bottomBar = {
@@ -77,7 +93,7 @@ fun ShowAnswers(
                     IconButton(
                         onClick = {
                             if (answerValue.isNotBlank()) {                     //If the answer is blank, nothing happens
-                                setAnswers(answerValue, selectedQuestion)       //When we add a new answer, the user must scroll down to see it
+                                setAnswers(answerValue, selectedQuestion, db)   //When we add a new answer, the user must scroll down to see it
                                 //When a new answer is added to the TaskAnswers List, it is also added to selectedQuestion, since TakAnswers is a reference to selectedQuestion
                                 setAnswer("")                                   //Reset the task answer
                             }
@@ -90,8 +106,26 @@ fun ShowAnswers(
             }
         }
     ) {innerPadding ->
+        var questionUserLoaded by remember { mutableStateOf(false) }
+        var questionUser by remember { mutableStateOf(User()) }
+
+        LaunchedEffect(questionUser) {
+            db.collection("Users").document(selectedQuestion.user)
+                .get()
+                .addOnSuccessListener {
+                        doc ->
+                    questionUser = doc.toObject(User::class.java)!!
+                    questionUserLoaded = true
+                }
+                .addOnFailureListener { exception ->
+                    Log.e("Firestore", "Error getting team data", exception)
+                }
+        }
+
         Row(
-            Modifier.verticalScroll(state).padding(innerPadding)
+            Modifier
+                .verticalScroll(state)
+                .padding(innerPadding)
         ) {
             Column(
                 Modifier.padding(16.dp)
@@ -108,14 +142,16 @@ fun ShowAnswers(
                         modifier = Modifier
                             .weight(1f)
                             .clickable(onClick = {
-                                showUserInformationPane(selectedQuestion.user.userNickname)
+                                showUserInformationPane(selectedQuestion.user)
                             })
                     ) {
-                        CreateImage(
-                            photo = selectedQuestion.user.userImage,
-                            name = "${selectedQuestion.user.userFirstName} ${selectedQuestion.user.userLastName}",
-                            size = 30
-                        )
+                        if(questionUserLoaded) {
+                            CreateImage(
+                                photo = if(questionUser.userImage == null) null else questionUser.userImage!!.toUri(),
+                                name = "${questionUser.userFirstName} ${questionUser.userLastName}",
+                                size = 30
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(10.dp))
@@ -124,11 +160,11 @@ fun ShowAnswers(
                         modifier = Modifier.weight(10f)
                     ) {
                         Text(
-                            text = selectedQuestion.user.userNickname,
+                            text = selectedQuestion.user,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
                             modifier = Modifier.clickable(onClick = {
-                                showUserInformationPane(selectedQuestion.user.userNickname)
+                                showUserInformationPane(selectedQuestion.user)
                             })
                         )
 
@@ -157,46 +193,67 @@ fun ShowAnswers(
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        if(answers.size == 0) {
-                            Text(
-                                text = "no answers",
-                                color = Color.Gray
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                        }
-                        else {
-                            for (a in answers) {
-                                Row {
-                                    Column(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clickable(onClick = {
-                                                showUserInformationPane(a.user.userNickname)
-                                            })
-                                    ) {
-                                        Spacer(modifier = Modifier.height(10.dp))
+                        if(answersLoaded) {
+                            if (answers.size == 0) {
+                                Text(
+                                    text = "no answers",
+                                    color = Color.Gray
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                            } else {
+                                for (a in answers) {
+                                    var answerUserLoaded by remember { mutableStateOf(false) }
+                                    var answerUser by remember { mutableStateOf(User()) }
 
-                                        CreateImage(
-                                            photo = a.user.userImage,
-                                            name = "${a.user.userFirstName} ${a.user.userLastName}",
-                                            size = 30
-                                        )
+                                    LaunchedEffect(answerUser) {
+                                        db.collection("Users").document(a.user)
+                                            .get()
+                                            .addOnSuccessListener { doc ->
+                                                answerUser = doc.toObject(User::class.java)!!
+                                                answerUserLoaded = true
+                                            }
+                                            .addOnFailureListener { exception ->
+                                                Log.e("Firestore", "Error getting team data", exception)
+                                            }
                                     }
 
-                                    Column(
-                                        modifier = Modifier
-                                            .weight(10f)
-                                            .padding(horizontal = 10.dp)
-                                    ) {
-                                        HorizontalDivider()
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Text(
-                                            text = a.text,
-                                            fontSize = 18.sp
-                                        )
+                                    Row {
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable(onClick = {
+                                                    showUserInformationPane(a.user)
+                                                })
+                                        ) {
+                                            Spacer(modifier = Modifier.height(10.dp))
+
+                                            if(answerUserLoaded) {
+                                                CreateImage(
+                                                    photo = if(answerUser.userImage == null) null else answerUser.userImage!!.toUri(),
+                                                    name = "${answerUser.userFirstName} ${answerUser.userLastName}",
+                                                    size = 30
+                                                )
+                                            }
+                                        }
+
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(10f)
+                                                .padding(horizontal = 10.dp)
+                                        ) {
+                                            HorizontalDivider()
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Text(
+                                                text = a.text,
+                                                fontSize = 18.sp
+                                            )
+                                        }
                                     }
                                 }
                             }
+                        }
+                        else {
+                            CircularProgressIndicator()
                         }
                         Spacer(modifier = Modifier.height(3.dp))
                     }

@@ -18,12 +18,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -38,6 +41,7 @@ import it.polito.BeeDone.utils.DatePickerWithDialog
 import it.polito.BeeDone.utils.ImagePicker
 import it.polito.BeeDone.utils.PastOrPresentSelectableDates
 import it.polito.BeeDone.utils.lightBlue
+import it.polito.BeeDone.utils.myShape
 import it.polito.BeeDone.utils.rememberImeState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -125,13 +129,23 @@ fun EditUserInformationPane(
                 )
 
                 //Nickname
-                CreateTextFieldError(
-                    nicknameValue,
-                    nicknameError,
-                    setNickname,
-                    "Nickname *",
-                    KeyboardType.Text
+                OutlinedTextField(
+                    value = nicknameValue,
+                    onValueChange = {},
+                    label = { Text("Nickname *") },
+                    placeholder = { Text("")},
+                    keyboardOptions = KeyboardOptions.Default.copy(keyboardType = KeyboardType.Text),
+                    shape = myShape,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = lightBlue,
+                        focusedLabelColor = lightBlue,
+                        focusedTextColor = Color.DarkGray
+                    ),
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = Int.MAX_VALUE
                 )
+                Spacer(modifier = Modifier.height(16.dp))
 
                 //Location
                 CreateTextFieldError(
@@ -325,6 +339,7 @@ fun EditUserInformationPane(
                         Text(text = "Change Password")
                     }
                     Spacer(modifier = Modifier.height(16.dp))
+
                 }
             }
         }
